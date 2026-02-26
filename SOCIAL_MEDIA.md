@@ -1,6 +1,71 @@
-# Social Media Posts for v0.2.17
+# Social Media Posts for v0.2.21
 
 ---
+
+## LinkedIn Post
+
+Remote AI coding just got a massive brain transplant! 🧠🚀
+
+I’m thrilled to release v0.2.21 of Antigravity Phone Connect.
+
+This update is all about deep integration and visual fidelity—making sure your mobile experience is as powerful as your desktop IDE.
+
+What’s new:
+✅ Remote Command Actions — "Run" and "Reject" code blocks directly from your phone. Total control, even when you're away from your desk. 🎮
+✅ Occurrence Index Tracking — We solved the "multi-button" click problem. Zero misclicks in complex UI trees. 🎯
+✅ Base64 Image Fidelity — No more broken images on remote devices! Local assets now render flawlessly via auto-Base64 conversion. 🖼️
+✅ Full History Integration — Seamlessly browse and switch between past AI conversations on mobile. 📜
+
+Antigravity Phone Connect is open-source and ready for your mobile AI workflows. Check it out on GitHub!
+
+https://github.com/krishnakanthb13/antigravity_phone_chat
+
+#OpenSource #AI #DevTools #MobileDev #Antigravity #Automation #Efficiency
+
+---
+
+## Reddit Post
+
+**Suggested Sub-Reddits:** r/programming, r/webdev, r/SideProject, r/opensource
+**Title:** [Showcase] Antigravity Phone Connect v0.2.21 — Now with Remote Code Execution control and Flawless Image Fidelity!
+
+Hey everyone! 👋
+
+I've been building an open-source tool that mirrors your desktop AI coding assistant (Antigravity/VS Code) to your phone. It uses a Node/Python bridge with Chrome DevTools Protocol (CDP) to keep you in the loop even when you step away from your desk.
+
+We just hit v0.2.21, and it's a big one for remote control:
+
+🎮 **Remote Command Actions:** You can now trigger "Run" and "Reject" actions on AI-generated code blocks directly from your phone.
+🎯 **Indestructible Clicks:** We implemented "Occurrence Index Tracking" to handle identical buttons in deep UI trees. If it’s on your screen, you can click it with 100% accuracy.
+🖼️ **Base64 Rendering:** Fixed the "broken image" issue for remote devices by automatically converting all local SVGs and images to Base64 before streaming.
+📜 **Mobile History:** Full integration for browsing and switching between past chat sessions.
+
+**The Tech Stack:**
+- **Backend:** Node.js (Express/WS) + Python (Launcher Logic)
+- **Protocol:** Chrome DevTools Protocol (CDP) for DOM scraping and remote interaction.
+- **Frontend:** Vanilla JS with aggressive CSS inheritance and glassmorphism styling.
+
+I’d love to hear your thoughts!
+
+Repo: https://github.com/krishnakanthb13/antigravity_phone_chat
+
+---
+
+## X (Twitter) Post
+
+Antigravity Phone Connect v0.2.21 is here! 📱🚀
+
+✅ Run/Reject code blocks remotely 🎮
+✅ Zero misclicks with Index Tracking 🎯
+✅ Flawless images via Base64 conversion 🖼️
+✅ Mobile Chat History integration 📜
+
+Remote AI coding just got a whole lot more powerful. 
+
+https://github.com/krishnakanthb13/antigravity_phone_chat
+
+---
+
 
 ## LinkedIn Post
 

@@ -4,6 +4,27 @@ All notable changes to **Antigravity Phone Connect** are documented here, in rev
 
 ---
 
+## v0.2.21 - Deep Integration & Visual Fidelity 🚀
+**Release Date:** February 26, 2026
+
+---
+
+### 🚀 New Features & Infrastructure
+- **Remote Command Actions**: Fully documented and stabilized support for remote "Run" and "Reject" command buttons, allowing for seamless remote code execution control.
+- **Occurrence Index Tracking**: Introduced a new tracking system for remote clicks that ensures perfectly accurate targeting in complex, repetitive UI trees (no more misclicks on identical buttons!).
+- **Mobile Chat History Integration**: Browsing and switching between past AI conversations is now fully integrated into the mobile UI.
+- **Base64 Image Fidelity**: All local SVGs and images are now automatically converted to Base64 before being served. This fixes the "broken image" issue commonly seen when accessing the server from a remote device.
+
+### ⚡ Improvements & Fixes
+- **v0.2.19 - Inline File References**: Fixed a CSS rendering bug where file icons and filenames would break into multiple lines; they now render perfectly inline.
+- **v0.2.18 - XSS Hardening**: Added robust XSS protection for chat history titles in the mobile interface.
+
+### 📚 Documentation
+- **v0.2.20 - Scoped Boundaries**: Documented strict scoped boundaries for DOM scraping to improve performance and prevent unintended context leakage.
+
+---
+
+
 ## v0.2.17 - UI Polish & Model Compatibility 🌟
 **Release Date:** February 20, 2026
 
