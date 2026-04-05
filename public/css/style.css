@@ -482,8 +482,7 @@ body {
 .input-section {
     background: var(--bg-panel);
     border-top: none;
-    /* Removed border since actions are above */
-    padding: 8px 16px 12px 16px;
+    padding: 6px 12px 8px 12px;
     padding-bottom: max(12px, env(safe-area-inset-bottom));
     flex-shrink: 0;
     display: flex;
