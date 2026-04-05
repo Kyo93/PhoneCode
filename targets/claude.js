@@ -163,8 +163,6 @@ export async function injectMessage(cdp, text) {
         const textToInsert = ${safeText};
 
         editor.focus();
-        document.execCommand?.('selectAll', false, null);
-        document.execCommand?.('delete', false, null);
 
         let inserted = false;
         try { inserted = !!document.execCommand?.('insertText', false, textToInsert); } catch {}
