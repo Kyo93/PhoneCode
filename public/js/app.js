@@ -20,6 +20,8 @@ const modeText = document.getElementById('modeText');
 const modelText = document.getElementById('modelText');
 const historyLayer = document.getElementById('historyLayer');
 const historyList = document.getElementById('historyList');
+const tabAntigravity = document.getElementById('tab-antigravity');
+const tabClaude = document.getElementById('tab-claude');
 
 // --- State ---
 let autoRefreshEnabled = true;
@@ -74,6 +76,57 @@ async function fetchAppState() {
         console.log('[SYNC] State refreshed from Desktop:', data);
     } catch (e) { console.error('[SYNC] Failed to sync state', e); }
 }
+
+// --- Target Switching ---
+async function fetchTargets() {
+    try {
+        const res = await fetchWithAuth('/targets');
+        const data = await res.json();
+        
+        // Update tab styles
+        tabAntigravity.classList.toggle('active', data.current === 'antigravity');
+        tabClaude.classList.toggle('active', data.current === 'claude');
+        
+        // Update connection dots
+        const antTarget = data.targets.find(t => t.id === 'antigravity');
+        const claTarget = data.targets.find(t => t.id === 'claude');
+        
+        tabAntigravity.classList.toggle('connected', antTarget?.connected);
+        tabClaude.classList.toggle('connected', claTarget?.connected);
+
+        // If target switched and we are active, reload
+        if (window.lastTarget && window.lastTarget !== data.current) {
+             console.log('[TARGET] Target changed on server, reloading...');
+             loadSnapshot();
+        }
+        window.lastTarget = data.current;
+    } catch (e) { console.error('[TARGET] Failed to fetch targets', e); }
+}
+
+async function switchTarget(id) {
+    try {
+        const res = await fetchWithAuth('/switch-target', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: id })
+        });
+        const data = await res.json();
+        if (data.success) {
+            console.log('[TARGET] Switched to', id);
+            fetchTargets();
+            // Clear current chat view for a moment to show loading
+            chatContent.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+            setTimeout(loadSnapshot, 300);
+        }
+    } catch (e) { console.error('[TARGET] Switch failed', e); }
+}
+
+tabAntigravity?.addEventListener('click', () => switchTarget('antigravity'));
+tabClaude?.addEventListener('click', () => switchTarget('claude'));
+
+// Sync targets every 5 seconds
+setInterval(fetchTargets, 5000);
+fetchTargets();
 
 // --- SSL Banner ---
 const sslBanner = document.getElementById('sslBanner');
@@ -406,6 +459,33 @@ async function loadSnapshot() {
             '[style*="background-color: white"],\n' +
             '[style*="background: white"] {\n' +
             '    background-color: transparent !important;\n' +
+            '}\n' +
+            '\n' +
+            '/* Fix Claude Code: Reset layout that breaks mobile scrolling */\n' +
+            '#chatContent > * {\n' +
+            '    position: relative !important;\n' +
+            '    height: auto !important;\n' +
+            '    min-height: 0 !important;\n' +
+            '    max-height: none !important;\n' +
+            '    overflow: visible !important;\n' +
+            '}\n' +
+            '#chatContent > * > * {\n' +
+            '    position: relative !important;\n' +
+            '    height: auto !important;\n' +
+            '    min-height: 0 !important;\n' +
+            '    max-height: none !important;\n' +
+            '    overflow: visible !important;\n' +
+            '}\n' +
+            '#chatContent [style*="position: fixed"],\n' +
+            '#chatContent [style*="position:fixed"] {\n' +
+            '    position: relative !important;\n' +
+            '}\n' +
+            '#chatContent [style*="height: 100vh"],\n' +
+            '#chatContent [style*="height:100vh"],\n' +
+            '#chatContent [style*="overflow: hidden"],\n' +
+            '#chatContent [style*="overflow:hidden"] {\n' +
+            '    height: auto !important;\n' +
+            '    overflow: visible !important;\n' +
             '}';
         styleTag.textContent = darkModeOverrides;
         chatContent.innerHTML = data.html;

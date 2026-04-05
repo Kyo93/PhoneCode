@@ -27,7 +27,8 @@ let AUTH_TOKEN = 'ag_default_token';
 
 
 // Shared CDP connection
-let cdpConnection = null;
+let cdpConnections = new Map(); // targetKey -> { port, url, ws, call, contexts }
+let currentTarget = 'antigravity';
 let lastSnapshot = null;
 let lastSnapshotHash = null;
 
@@ -109,33 +110,49 @@ function getJson(url) {
     });
 }
 
-// Find Antigravity CDP endpoint
-// Find Antigravity CDP endpoint
+// Find Antigravity CDP endpoints (Workbench and Extensions)
 async function discoverCDP() {
+    const results = {
+        antigravity: null,
+        claude: null
+    };
     const errors = [];
+
     for (const port of PORTS) {
         try {
             const list = await getJson(`http://127.0.0.1:${port}/json/list`);
 
-            // Priority 1: Standard Workbench (The main window)
-            const workbench = list.find(t => t.url?.includes('workbench.html') || (t.title && t.title.includes('workbench')));
+            // 1. Standard Workbench (Antigravity)
+            const workbench = list.find(t => t.url?.includes('workbench.html') || (t.title && (t.title.includes('workbench') || t.title.includes('Antigravity'))));
             if (workbench && workbench.webSocketDebuggerUrl) {
-                console.log('Found Workbench target:', workbench.title);
-                return { port, url: workbench.webSocketDebuggerUrl };
+                results.antigravity = { port, url: workbench.webSocketDebuggerUrl, title: workbench.title };
             }
 
-            // Priority 2: Jetski/Launchpad (Fallback)
-            const jetski = list.find(t => t.url?.includes('jetski') || t.title === 'Launchpad');
-            if (jetski && jetski.webSocketDebuggerUrl) {
-                console.log('Found Jetski/Launchpad target:', jetski.title);
-                return { port, url: jetski.webSocketDebuggerUrl };
+            // 2. Claude Code Extension (Webview)
+            // There may be multiple iframes with extensionId=Anthropic.claude-code:
+            // - The outer webview container (index.html with purpose=webviewView)
+            // - The inner active-frame iframe (also same extensionId, different id param)
+            // The inner frame is the one with the actual Claude Code UI.
+            // Prioritize: purpose=webviewView first, otherwise last match (inner frame comes last).
+            const claudeTargets = list.filter(t => t.url?.includes('extensionId=Anthropic.claude-code') || t.title?.includes('Claude Code'));
+            if (claudeTargets.length > 0) {
+                const viewTarget = claudeTargets.find(t => t.url?.includes('purpose=webviewView'));
+                const best = viewTarget || claudeTargets[claudeTargets.length - 1];
+                if (best && best.webSocketDebuggerUrl) {
+                    results.claude = { port, url: best.webSocketDebuggerUrl, title: best.title };
+                }
             }
         } catch (e) {
             errors.push(`${port}: ${e.message}`);
         }
     }
-    const errorSummary = errors.length ? `Errors: ${errors.join(', ')}` : 'No ports responding';
-    throw new Error(`CDP not found. ${errorSummary}`);
+
+    if (!results.antigravity && !results.claude) {
+        const errorSummary = errors.length ? `Errors: ${errors.join(', ')}` : 'No ports responding';
+        throw new Error(`CDP not found. ${errorSummary}`);
+    }
+
+    return results;
 }
 
 // Connect to CDP
@@ -201,9 +218,19 @@ async function connectCDP(url) {
 }
 
 // Capture chat snapshot
-async function captureSnapshot(cdp) {
+async function captureSnapshot(cdp, targetType = 'antigravity') {
+    const isClaude = targetType === 'claude';
+
     const CAPTURE_SCRIPT = `(async () => {
-        const cascade = document.getElementById('conversation') || document.getElementById('chat') || document.getElementById('cascade');
+        // Selector strategy based on target
+        let cascade;
+        if (${isClaude}) {
+            // Claude Code extension uses specific containers - usually full body or a root div
+            cascade = document.body;
+        } else {
+            cascade = document.getElementById('conversation') || document.getElementById('chat') || document.getElementById('cascade');
+        }
+
         if (!cascade) {
             // Debug info
             const body = document.body;
@@ -224,7 +251,26 @@ async function captureSnapshot(cdp) {
         
         // Clone cascade to modify it without affecting the original
         const clone = cascade.cloneNode(true);
-        
+
+        // For Claude Code: fix inline styles that break mobile scrolling
+        if (${isClaude}) {
+            clone.querySelectorAll('*').forEach(el => {
+                try {
+                    const s = el.getAttribute('style');
+                    if (!s) return;
+                    let ns = s
+                        .replace(/position\s*:\s*fixed/gi, 'position: relative')
+                        .replace(/position\s*:\s*absolute/gi, 'position: relative')
+                        .replace(/overflow\s*:\s*hidden/gi, 'overflow: visible')
+                        .replace(/overflow-y\s*:\s*hidden/gi, 'overflow-y: visible')
+                        .replace(/height\s*:\s*100vh/gi, 'height: auto')
+                        .replace(/min-height\s*:\s*100vh/gi, 'min-height: 0')
+                        .replace(/height\s*:\s*100%/gi, 'height: auto');
+                    if (ns !== s) el.setAttribute('style', ns);
+                } catch(e) {}
+            });
+        }
+
         // Aggressively remove the entire interaction/input/review area
         try {
             // 1. Identify common interaction wrappers by class combinations
@@ -382,8 +428,9 @@ async function captureSnapshot(cdp) {
     return null;
 }
 
-// Inject message into Antigravity
-async function injectMessage(cdp, text) {
+// Inject message into target
+async function injectMessage(cdp, text, targetType = 'antigravity') {
+    const isClaude = targetType === 'claude';
     // Use JSON.stringify for robust escaping (handles ", \, newlines, backticks, unicode, etc.)
     const safeText = JSON.stringify(text);
 
@@ -391,36 +438,79 @@ async function injectMessage(cdp, text) {
         const cancel = document.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
         if (cancel && cancel.offsetParent !== null) return { ok:false, reason:"busy" };
 
-        const editors = [...document.querySelectorAll('#conversation [contenteditable="true"], #chat [contenteditable="true"], #cascade [contenteditable="true"]')]
-            .filter(el => el.offsetParent !== null);
-        const editor = editors.at(-1);
+        let editor;
+        if (${isClaude}) {
+            // Claude Code renders inside #active-frame (same-origin iframe in VS Code webview)
+            // Input is <div contenteditable="plaintext-only">, not "true"
+            const frame = document.getElementById('active-frame');
+            const doc = frame?.contentDocument || frame?.contentWindow?.document || document;
+            editor = doc.querySelector('[contenteditable="plaintext-only"], [contenteditable="true"], textarea');
+        } else {
+            const editors = [...document.querySelectorAll('#conversation [contenteditable="true"], #chat [contenteditable="true"], #cascade [contenteditable="true"]')]
+                .filter(el => el.offsetParent !== null);
+            editor = editors.at(-1);
+        }
+
         if (!editor) return { ok:false, error:"editor_not_found" };
 
         const textToInsert = ${safeText};
 
         editor.focus();
-        document.execCommand?.("selectAll", false, null);
-        document.execCommand?.("delete", false, null);
+        if (editor.tagName === 'TEXTAREA' || editor.tagName === 'INPUT') {
+            // Use native setter to bypass React's controlled component interception
+            const proto = editor.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+            const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+            if (nativeSetter) {
+                nativeSetter.call(editor, textToInsert);
+            } else {
+                editor.value = textToInsert;
+            }
+            editor.dispatchEvent(new Event('input', { bubbles: true }));
+            editor.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+            document.execCommand?.("selectAll", false, null);
+            document.execCommand?.("delete", false, null);
 
-        let inserted = false;
-        try { inserted = !!document.execCommand?.("insertText", false, textToInsert); } catch {}
-        if (!inserted) {
-            editor.textContent = textToInsert;
-            editor.dispatchEvent(new InputEvent("beforeinput", { bubbles:true, inputType:"insertText", data: textToInsert }));
-            editor.dispatchEvent(new InputEvent("input", { bubbles:true, inputType:"insertText", data: textToInsert }));
+            let inserted = false;
+            try { inserted = !!document.execCommand?.("insertText", false, textToInsert); } catch {}
+            if (!inserted) {
+                editor.textContent = textToInsert;
+                editor.dispatchEvent(new InputEvent("beforeinput", { bubbles:true, inputType:"insertText", data: textToInsert }));
+                editor.dispatchEvent(new InputEvent("input", { bubbles:true, inputType:"insertText", data: textToInsert }));
+            }
         }
 
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-        const submit = document.querySelector("svg.lucide-arrow-right")?.closest("button");
+        // Submit button finding based on target
+        let submit;
+        if (${isClaude}) {
+           // Claude Code - query inside #active-frame (same-origin)
+           const frame2 = document.getElementById('active-frame');
+           const doc2 = frame2?.contentDocument || frame2?.contentWindow?.document || document;
+           submit = doc2.querySelector('button[aria-label="Send"]')
+               || doc2.querySelector('button[title="Send"]')
+               || doc2.querySelector('button[type="submit"]')
+               || doc2.querySelector('button svg.lucide-arrow-up, button svg.lucide-send, button svg.lucide-corner-down-left, button svg.lucide-arrow-right')?.closest('button')
+               || Array.from(doc2.querySelectorAll('button')).find(b => {
+                   if (!b.offsetParent || b.disabled) return false;
+                   const rect = b.getBoundingClientRect();
+                   return rect.bottom > window.innerHeight * 0.5 && rect.width < 80;
+               });
+        } else {
+           submit = document.querySelector("svg.lucide-arrow-right")?.closest("button");
+        }
+
         if (submit && !submit.disabled) {
             submit.click();
             return { ok:true, method:"click_submit" };
         }
 
-        // Submit button not found, but text is inserted - trigger Enter key
-        editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles:true, key:"Enter", code:"Enter" }));
-        editor.dispatchEvent(new KeyboardEvent("keyup", { bubbles:true, key:"Enter", code:"Enter" }));
+        // Trigger Enter key fallback
+        const enterEvt = { bubbles: true, cancelable: true, key: "Enter", code: "Enter", charCode: 13, keyCode: 13, which: 13 };
+        editor.dispatchEvent(new KeyboardEvent("keydown", enterEvt));
+        editor.dispatchEvent(new KeyboardEvent("keypress", enterEvt));
+        editor.dispatchEvent(new KeyboardEvent("keyup", enterEvt));
         
         return { ok:true, method:"enter_keypress" };
     })()`;
@@ -1371,15 +1461,34 @@ function isLocalRequest(req) {
         ip.startsWith('::ffff:10.');
 }
 
-// Initialize CDP connection
+// Initialize CDP connection for all discovered targets
 async function initCDP() {
-    console.log('🔍 Discovering Antigravity CDP endpoint...');
-    const cdpInfo = await discoverCDP();
-    console.log(`✅ Found Antigravity on port ${cdpInfo.port} `);
+    console.log('🔍 Discovering CDP endpoints...');
+    const targets = await discoverCDP();
 
-    console.log('🔌 Connecting to CDP...');
-    cdpConnection = await connectCDP(cdpInfo.url);
-    console.log(`✅ Connected! Found ${cdpConnection.contexts.length} execution contexts\n`);
+    // 1. Antigravity
+    if (targets.antigravity && !cdpConnections.has('antigravity')) {
+        console.log(`🔌 Connecting to Antigravity on port ${targets.antigravity.port}...`);
+        try {
+            const conn = await connectCDP(targets.antigravity.url);
+            cdpConnections.set('antigravity', { ...targets.antigravity, ...conn });
+            console.log(`✅ Connected to Antigravity! (${conn.contexts.length} contexts)`);
+        } catch (e) {
+            console.error(`❌ Failed to connect to Antigravity: ${e.message}`);
+        }
+    }
+
+    // 2. Claude
+    if (targets.claude && !cdpConnections.has('claude')) {
+        console.log(`🔌 Connecting to Claude Extension on port ${targets.claude.port}...`);
+        try {
+            const conn = await connectCDP(targets.claude.url);
+            cdpConnections.set('claude', { ...targets.claude, ...conn });
+            console.log(`✅ Connected to Claude Extension! (${conn.contexts.length} contexts)`);
+        } catch (e) {
+            console.error(`❌ Failed to connect to Claude: ${e.message}`);
+        }
+    }
 }
 
 // Background polling
@@ -1388,20 +1497,22 @@ async function startPolling(wss) {
     let isConnecting = false;
 
     const poll = async () => {
-        if (!cdpConnection || (cdpConnection.ws && cdpConnection.ws.readyState !== WebSocket.OPEN)) {
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp || (cdp.ws && cdp.ws.readyState !== WebSocket.OPEN)) {
             if (!isConnecting) {
-                console.log('🔍 Looking for Antigravity CDP connection...');
+                console.log(`🔍 Looking for ${currentTarget} CDP connection...`);
                 isConnecting = true;
             }
-            if (cdpConnection) {
+            if (cdp) {
                 // Was connected, now lost
-                console.log('🔄 CDP connection lost. Attempting to reconnect...');
-                cdpConnection = null;
+                console.log(`🔄 ${currentTarget} CDP connection lost. Attempting to reconnect...`);
+                cdpConnections.delete(currentTarget);
             }
             try {
                 await initCDP();
-                if (cdpConnection) {
-                    console.log('✅ CDP Connection established from polling loop');
+                const newCdp = cdpConnections.get(currentTarget);
+                if (newCdp) {
+                    console.log(`✅ ${currentTarget} CDP Connection established from polling loop`);
                     isConnecting = false;
                 }
             } catch (err) {
@@ -1412,7 +1523,7 @@ async function startPolling(wss) {
         }
 
         try {
-            const snapshot = await captureSnapshot(cdpConnection);
+            const snapshot = await captureSnapshot(cdp, currentTarget);
             if (snapshot && !snapshot.error) {
                 const hash = hashString(snapshot.html);
 
@@ -1438,12 +1549,12 @@ async function startPolling(wss) {
                 const now = Date.now();
                 if (!lastErrorLog || now - lastErrorLog > 10000) {
                     const errorMsg = snapshot?.error || 'No valid snapshot captured (check contexts)';
-                    console.warn(`⚠️  Snapshot capture issue: ${errorMsg} `);
+                    console.warn(`⚠️  Snapshot capture issue (${currentTarget}): ${errorMsg} `);
                     if (errorMsg.includes('container not found')) {
-                        console.log('   (Tip: Ensure an active chat is open in Antigravity)');
+                        console.log(`   (Tip: Ensure an active chat is open in ${currentTarget})`);
                     }
-                    if (cdpConnection.contexts.length === 0) {
-                        console.log('   (Tip: No active execution contexts found. Try interacting with the Antigravity window)');
+                    if (cdp.contexts.length === 0) {
+                        console.log('   (Tip: No active execution contexts found)');
                     }
                     lastErrorLog = now;
                 }
@@ -1571,9 +1682,10 @@ async function createServer() {
 
     // Health check endpoint
     app.get('/health', (req, res) => {
+        const cdp = cdpConnections.get(currentTarget);
         res.json({
             status: 'ok',
-            cdpConnected: cdpConnection?.ws?.readyState === 1, // WebSocket.OPEN = 1
+            cdpConnected: cdp?.ws?.readyState === 1, // WebSocket.OPEN = 1
             uptime: process.uptime(),
             timestamp: new Date().toISOString(),
             https: hasSSL
@@ -1613,8 +1725,9 @@ async function createServer() {
 
     // Debug UI Endpoint
     app.get('/debug-ui', async (req, res) => {
-        if (!cdpConnection) return res.status(503).json({ error: 'CDP not connected' });
-        const uiTree = await inspectUI(cdpConnection);
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp) return res.status(503).json({ error: 'CDP not connected' });
+        const uiTree = await inspectUI(cdp);
         console.log('--- UI TREE ---');
         console.log(uiTree);
         console.log('---------------');
@@ -1624,27 +1737,30 @@ async function createServer() {
     // Set Mode
     app.post('/set-mode', async (req, res) => {
         const { mode } = req.body;
-        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-        const result = await setMode(cdpConnection, mode);
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+        const result = await setMode(cdp, mode);
         res.json(result);
     });
 
     // Set Model
     app.post('/set-model', async (req, res) => {
         const { model } = req.body;
-        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-        const result = await setModel(cdpConnection, model);
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+        const result = await setModel(cdp, model);
         res.json(result);
     });
 
     // Stop Generation
     app.post('/stop', async (req, res) => {
-        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-        const result = await stopGeneration(cdpConnection);
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+        const result = await stopGeneration(cdp);
         res.json(result);
     });
 
-    // Send message
+    // Send message (Legacy endpoint - redirects to target-aware logic)
     app.post('/send', async (req, res) => {
         const { message } = req.body;
 
@@ -1652,11 +1768,14 @@ async function createServer() {
             return res.status(400).json({ error: 'Message required' });
         }
 
-        if (!cdpConnection) {
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp) {
             return res.status(503).json({ error: 'CDP not connected' });
         }
 
-        const result = await injectMessage(cdpConnection, message);
+        const result = await injectMessage(cdp, message, currentTarget);
+
+        console.log(`📨 /send [${currentTarget}] contexts:${cdp.contexts.length} result:${JSON.stringify(result)}`);
 
         // Always return 200 - the message usually goes through even if CDP reports issues
         // The client will refresh and see if the message appeared
@@ -1669,7 +1788,8 @@ async function createServer() {
 
     // UI Inspection endpoint - Returns all buttons as JSON for debugging
     app.get('/ui-inspect', async (req, res) => {
-        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
 
         const EXP = `(() => {
     try {
@@ -1752,8 +1872,11 @@ async function createServer() {
 })()`;
 
         try {
+            const cdp = cdpConnections.get(currentTarget);
+            if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+
             // 1. Get Frames
-            const { frameTree } = await cdpConnection.call("Page.getFrameTree");
+            const { frameTree } = await cdp.call("Page.getFrameTree");
             function flattenFrames(node) {
                 let list = [{
                     id: node.frame.id,
@@ -1769,7 +1892,7 @@ async function createServer() {
             const allFrames = flattenFrames(frameTree);
 
             // 2. Map Contexts
-            const contexts = cdpConnection.contexts.map(c => ({
+            const contexts = cdp.contexts.map(c => ({
                 id: c.id,
                 name: c.name,
                 origin: c.origin,
@@ -1781,7 +1904,7 @@ async function createServer() {
             const contextResults = [];
             for (const ctx of contexts) {
                 try {
-                    const result = await cdpConnection.call("Runtime.evaluate", {
+                    const result = await cdp.call("Runtime.evaluate", {
                         expression: EXP,
                         returnByValue: true,
                         contextId: ctx.id
@@ -1931,45 +2054,81 @@ async function main() {
     }
 
     try {
+        // Initialize Server
         const { server, wss, app, hasSSL } = await createServer();
-
-        // Start background polling (it will now handle reconnections)
+        
+        // Start background polling
         startPolling(wss);
+
+        // --- ADDITIONAL MULTI-TARGET ENDPOINTS ---
+
+        // Target Switcher API
+        app.get('/targets', (req, res) => {
+            const list = [
+                { id: 'antigravity', name: 'Antigravity Chat', connected: cdpConnections.has('antigravity') },
+                { id: 'claude', name: 'Claude Extension', connected: cdpConnections.has('claude') }
+            ];
+            res.json({ current: currentTarget, targets: list });
+        });
+
+        app.post('/switch-target', async (req, res) => {
+            const { target } = req.body;
+            if (!['antigravity', 'claude'].includes(target)) {
+                return res.status(400).json({ error: 'Invalid target' });
+            }
+            
+            console.log(`🔄 Switching target to: ${target}`);
+            currentTarget = target;
+            lastSnapshot = null; // Force clear
+            lastSnapshotHash = null;
+
+            // Trigger immediate discovery attempt if not connected
+            if (!cdpConnections.has(target)) {
+                await initCDP();
+            }
+
+            res.json({ success: true, current: currentTarget });
+        });
 
         // Remote Click
         app.post('/remote-click', async (req, res) => {
             const { selector, index, textContent } = req.body;
-            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-            const result = await clickElement(cdpConnection, { selector, index, textContent });
+            const cdp = cdpConnections.get(currentTarget);
+            if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+            const result = await clickElement(cdp, { selector, index, textContent });
             res.json(result);
         });
 
         // Remote Scroll - sync phone scroll to desktop
         app.post('/remote-scroll', async (req, res) => {
             const { scrollTop, scrollPercent } = req.body;
-            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-            const result = await remoteScroll(cdpConnection, { scrollTop, scrollPercent });
+            const cdp = cdpConnections.get(currentTarget);
+            if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+            const result = await remoteScroll(cdp, { scrollTop, scrollPercent });
             res.json(result);
         });
 
         // Get App State
         app.get('/app-state', async (req, res) => {
-            if (!cdpConnection) return res.json({ mode: 'Unknown', model: 'Unknown' });
-            const result = await getAppState(cdpConnection);
+            const cdp = cdpConnections.get(currentTarget);
+            if (!cdp) return res.json({ mode: 'Unknown', model: 'Unknown' });
+            const result = await getAppState(cdp);
             res.json(result);
         });
 
         // Start New Chat
         app.post('/new-chat', async (req, res) => {
-            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-            const result = await startNewChat(cdpConnection);
+            const cdp = cdpConnections.get(currentTarget);
+            if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+            const result = await startNewChat(cdp);
             res.json(result);
         });
 
         // Get Chat History
         app.get('/chat-history', async (req, res) => {
-            if (!cdpConnection) return res.json({ error: 'CDP disconnected', chats: [] });
-            const result = await getChatHistory(cdpConnection);
+            const cdp = cdpConnections.get(currentTarget);
+            if (!cdp) return res.json({ error: 'CDP disconnected', chats: [] });
+            const result = await getChatHistory(cdp);
             res.json(result);
         });
 
@@ -1977,50 +2136,44 @@ async function main() {
         app.post('/select-chat', async (req, res) => {
             const { title } = req.body;
             if (!title) return res.status(400).json({ error: 'Chat title required' });
-            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-            const result = await selectChat(cdpConnection, title);
+            const cdp = cdpConnections.get(currentTarget);
+            if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+            const result = await selectChat(cdp, title);
             res.json(result);
         });
 
         // Close Chat History
         app.post('/close-history', async (req, res) => {
-            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-            const result = await closeHistory(cdpConnection);
+            const cdp = cdpConnections.get(currentTarget);
+            if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+            const result = await closeHistory(cdp);
             res.json(result);
         });
 
-        // Check if Chat is Open
-        app.get('/chat-status', async (req, res) => {
-            if (!cdpConnection) return res.json({ hasChat: false, hasMessages: false, editorFound: false });
-            const result = await hasChatOpen(cdpConnection);
-            res.json(result);
-        });
-
-        // Kill any existing process on the port before starting
-        await killPortProcess(SERVER_PORT);
-
-        // Start server
         const localIP = getLocalIP();
         const protocol = hasSSL ? 'https' : 'http';
+        
+        // Ensure port is free
+        await killPortProcess(SERVER_PORT);
+        
         server.listen(SERVER_PORT, '0.0.0.0', () => {
-            console.log(`🚀 Server running on ${protocol}://${localIP}:${SERVER_PORT}`);
-            if (hasSSL) {
-                console.log(`💡 First time on phone? Accept the security warning to proceed.`);
-            }
+            console.log(`\n🚀 [PHONE-CHAT] Server running at ${protocol}://localhost:${SERVER_PORT}`);
+            console.log(`🔐 App Password: ${APP_PASSWORD}`);
+            console.log(`📱 Direct link (same Wi-Fi): ${protocol}://${localIP}:${SERVER_PORT}`);
+            console.log(`🌐 Public tunnel (ngrok): Use your ngrok URL\n`);
         });
 
         // Graceful shutdown handlers
         const gracefulShutdown = (signal) => {
             console.log(`\n🛑 Received ${signal}. Shutting down gracefully...`);
-            wss.close(() => {
-                console.log('   WebSocket server closed');
-            });
-            server.close(() => {
-                console.log('   HTTP server closed');
-            });
-            if (cdpConnection?.ws) {
-                cdpConnection.ws.close();
-                console.log('   CDP connection closed');
+            wss.close(() => console.log('   WebSocket server closed'));
+            server.close(() => console.log('   HTTP server closed'));
+            
+            for (const [name, conn] of cdpConnections) {
+                if (conn.ws) {
+                    conn.ws.close();
+                    console.log(`   CDP connection [${name}] closed`);
+                }
             }
             setTimeout(() => process.exit(0), 1000);
         };

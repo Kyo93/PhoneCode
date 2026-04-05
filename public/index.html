@@ -78,15 +78,27 @@
         <button class="dismiss-btn" onclick="dismissSslBanner()">×</button>
     </div>
 
-    <!-- Chat Container -->
-    <div class="chat-container" id="chatContainer">
+    <div class="target-tabs" id="targetTabs">
+        <!-- Will be populated by JS -->
+         <button class="target-tab active" id="tab-antigravity">
+            <span class="status-dot"></span>
+            Antigravity
+         </button>
+         <button class="target-tab" id="tab-claude">
+            <span class="status-dot"></span>
+            Claude Code
+         </button>
+    </div>
+
+    <!-- Main Container -->
+    <main id="chatContainer">
         <div class="chat-content" id="chatContent">
             <div class="loading-state">
                 <div class="loading-spinner"></div>
                 <p>Waiting for snapshot...</p>
             </div>
         </div>
-    </div>
+    </main>
 
     <!-- Scroll to Bottom FAB -->
     <button class="fab" id="scrollToBottom" aria-label="Scroll to bottom">
