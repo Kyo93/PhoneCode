@@ -1816,6 +1816,65 @@ async function main() {
 
         // Get Chat History
         app.get('/chat-history', async (req, res) => {
+            // Claude Code: read history from filesystem (~/.claude/projects/)
+            if (currentTarget === 'claude') {
+                try {
+                    const projectsDir = join(os.homedir(), '.claude', 'projects');
+                    const chats = [];
+                    const seenSessions = new Set();
+
+                    const projectDirs = fs.readdirSync(projectsDir, { withFileTypes: true })
+                        .filter(d => d.isDirectory())
+                        .map(d => join(projectsDir, d.name));
+
+                    for (const projectDir of projectDirs) {
+                        const jsonlFiles = fs.readdirSync(projectDir)
+                            .filter(f => f.endsWith('.jsonl'));
+
+                        for (const file of jsonlFiles) {
+                            const sessionId = file.replace('.jsonl', '');
+                            if (seenSessions.has(sessionId)) continue;
+                            seenSessions.add(sessionId);
+
+                            const filePath = join(projectDir, file);
+                            const stat = fs.statSync(filePath);
+                            const mtime = stat.mtimeMs;
+
+                            // Read lines to find first user message as title
+                            const content = fs.readFileSync(filePath, 'utf8');
+                            const lines = content.split('\n').filter(l => l.trim());
+                            let title = null;
+                            for (const line of lines) {
+                                try {
+                                    const obj = JSON.parse(line);
+                                    if (obj.type === 'user' && obj.message?.content) {
+                                        const parts = obj.message.content;
+                                        const textPart = Array.isArray(parts)
+                                            ? parts.find(p => p.type === 'text')?.text
+                                            : (typeof parts === 'string' ? parts : null);
+                                        const t = textPart.trim();
+                                        // Skip system-injected context tags
+                                        if (t.length > 2 && !t.startsWith('<ide_') && !t.startsWith('<local-command') && !t.startsWith('<system') && !t.startsWith('<user-prompt') && !t.startsWith('<command-')) {
+                                            title = t.substring(0, 80);
+                                            break;
+                                        }
+                                    }
+                                } catch {}
+                            }
+                            if (title) chats.push({ title, sessionId, mtime, projectDir });
+                            else chats.push({ title: `Session ${sessionId.substring(0, 8)}`, sessionId, mtime, projectDir });
+                        }
+                    }
+
+                    // Sort newest first
+                    chats.sort((a, b) => b.mtime - a.mtime);
+                    return res.json({ success: true, chats: chats.slice(0, 50) });
+                } catch (e) {
+                    return res.json({ error: e.message, chats: [] });
+                }
+            }
+
+            // Antigravity: scrape via CDP
             const cdp = cdpConnections.get(currentTarget);
             if (!cdp) return res.json({ error: 'CDP disconnected', chats: [] });
             const result = await getChatHistory(cdp);

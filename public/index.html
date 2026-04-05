@@ -91,37 +91,6 @@
          </button>
     </div>
 
-    <!-- Claude Code Toolbar (only visible when Claude tab active) -->
-    <div class="claude-toolbar" id="claudeToolbar">
-        <button class="claude-tool-btn" id="btnAddFile" onclick="claudeAction('add-file')" title="Add file">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            <span>+ File</span>
-        </button>
-        <button class="claude-tool-btn" id="btnSlashCmd" onclick="claudeAction('slash-command')" title="Open command palette">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/>
-                <line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>
-            </svg>
-            <span>/ Command</span>
-        </button>
-        <button class="claude-tool-btn" id="btnEditAuto" onclick="claudeAction('toggle-edit-auto')" title="Toggle Edit automatically">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
-            </svg>
-            <span>Edit Auto</span>
-        </button>
-        <button class="claude-tool-btn claude-tool-btn--bypass" id="btnBypass" onclick="claudeAction('bypass')" title="Bypass permission dialog">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
-            </svg>
-            <span>Bypass</span>
-        </button>
-    </div>
 
     <!-- Main Container -->
     <main id="chatContainer" class="chat-container">

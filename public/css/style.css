@@ -47,8 +47,8 @@ body {
     background: rgba(30, 41, 59, 0.8);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    padding: 6px 12px;
-    padding-top: max(6px, env(safe-area-inset-top));
+    padding: 3px 12px;
+    padding-top: max(3px, env(safe-area-inset-top));
     border-bottom: 1px solid var(--border);
     display: flex;
     justify-content: space-between;
@@ -84,9 +84,9 @@ body {
     background: #ef4444;
     color: #fff;
     border: none;
-    padding: 8px 14px;
-    min-height: 44px;
-    font-size: 12px;
+    padding: 5px 10px;
+    min-height: 30px;
+    font-size: 11px;
     font-weight: 600;
     border-radius: 4px;
     cursor: pointer;
@@ -107,9 +107,9 @@ body {
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    padding: 10px;
-    min-width: 44px;
-    min-height: 44px;
+    padding: 6px;
+    min-width: 30px;
+    min-height: 30px;
     border-radius: 4px;
     display: flex;
     align-items: center;
@@ -136,9 +136,9 @@ body {
     border: none;
     color: #fff;
     cursor: pointer;
-    padding: 12px;
-    min-width: 44px;
-    min-height: 44px;
+    padding: 6px;
+    min-width: 30px;
+    min-height: 30px;
     border-radius: 10px;
     display: flex;
     align-items: center;
@@ -170,9 +170,9 @@ body {
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    padding: 10px;
-    min-width: 44px;
-    min-height: 44px;
+    padding: 6px;
+    min-width: 30px;
+    min-height: 30px;
     border-radius: 4px;
     display: flex;
     align-items: center;
@@ -347,8 +347,8 @@ body {
     align-items: center;
     justify-content: center;
     gap: 6px;
-    padding: 6px 12px;
-    min-height: 36px;
+    padding: 4px 12px;
+    min-height: 28px;
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
@@ -383,58 +383,6 @@ body {
     box-shadow: 0 0 6px var(--success);
 }
 
-/* Claude Code Toolbar */
-.claude-toolbar {
-    display: none;
-    gap: 6px;
-    padding: 5px 12px;
-    overflow-x: auto;
-    scrollbar-width: none;
-    background: rgba(255, 255, 255, 0.02);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.claude-toolbar::-webkit-scrollbar { display: none; }
-
-.claude-toolbar.visible { display: flex; }
-
-.claude-tool-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    color: var(--text-main);
-    padding: 10px 14px;
-    min-height: 44px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: all 0.2s ease;
-    flex-shrink: 0;
-}
-
-.claude-tool-btn:active {
-    transform: scale(0.95);
-    background: rgba(255, 255, 255, 0.12);
-}
-
-.claude-tool-btn.active {
-    background: rgba(99, 179, 237, 0.18);
-    border-color: rgba(99, 179, 237, 0.4);
-    color: #90cdf4;
-}
-
-.claude-tool-btn--bypass {
-    border-color: rgba(252, 129, 74, 0.3);
-    color: #fc814a;
-}
-
-.claude-tool-btn--bypass:active {
-    background: rgba(252, 129, 74, 0.15);
-}
 
 /* Quick Actions Bar */
 .quick-actions {
@@ -665,7 +613,7 @@ textarea::-webkit-scrollbar {
     background: rgba(30, 41, 59, 0.6);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    padding: 5px 12px;
+    padding: 3px 12px;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -679,10 +627,10 @@ textarea::-webkit-scrollbar {
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.1);
     color: var(--text-main);
-    padding: 10px 14px;
-    min-height: 44px;
+    padding: 4px 10px;
+    min-height: 26px;
     border-radius: 20px;
-    font-size: 13px;
+    font-size: 12px;
     cursor: pointer;
     white-space: nowrap;
     transition: all 0.2s;

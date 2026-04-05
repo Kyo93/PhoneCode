@@ -88,7 +88,17 @@ export async function captureSnapshot(cdp) {
         const rules = [];
         for (const sheet of document.styleSheets) {
             try {
-                for (const rule of sheet.cssRules) rules.push(rule.cssText);
+                for (const rule of sheet.cssRules) {
+                    let text = rule.cssText;
+                    // Strip fixed/absolute positioning and high z-index to prevent overlays blocking phone touch
+                    text = text
+                        .replace(/position\s*:\s*fixed/gi, 'position: relative')
+                        .replace(/position\s*:\s*sticky/gi, 'position: relative')
+                        .replace(/z-index\s*:\s*\d{3,}/gi, 'z-index: 1')
+                        .replace(/height\s*:\s*100vh/gi, 'height: auto')
+                        .replace(/min-height\s*:\s*100vh/gi, 'min-height: 0');
+                    rules.push(text);
+                }
             } catch (e) { }
         }
         const allCSS = rules.join('\\n');
@@ -133,46 +143,55 @@ export async function injectMessage(cdp, text) {
     const safeText = JSON.stringify(text);
 
     const EXPRESSION = `(async () => {
-        // Access Claude Code UI via the active-frame iframe (same-origin)
+        // Try direct document first (same approach as captureSnapshot which works)
+        // Then fall back to active-frame iframe if needed
+        let doc = document;
+        let win = window;
+
         const frame = document.getElementById('active-frame');
-        const doc = frame?.contentDocument || frame?.contentWindow?.document || document;
+        if (frame?.contentDocument) {
+            const frameEditor = frame.contentDocument.querySelector('[contenteditable="plaintext-only"], [contenteditable="true"], textarea');
+            if (frameEditor) {
+                doc = frame.contentDocument;
+                win = frame.contentWindow;
+            }
+        }
 
         const editor = doc.querySelector('[contenteditable="plaintext-only"], [contenteditable="true"], textarea');
-        if (!editor) return { ok:false, error:"editor_not_found" };
+        if (!editor) return { ok:false, error:"editor_not_found", frameFound: !!frame, url: location.href };
 
         const textToInsert = ${safeText};
 
         editor.focus();
-        if (editor.tagName === 'TEXTAREA' || editor.tagName === 'INPUT') {
-            // Native setter bypasses React controlled component interception
-            const proto = editor.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-            const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-            if (nativeSetter) nativeSetter.call(editor, textToInsert);
-            else editor.value = textToInsert;
-            editor.dispatchEvent(new Event('input', { bubbles: true }));
-            editor.dispatchEvent(new Event('change', { bubbles: true }));
-        } else {
-            let inserted = false;
-            try { inserted = !!document.execCommand?.("insertText", false, textToInsert); } catch {}
-            if (!inserted) {
-                editor.textContent = textToInsert;
-                editor.dispatchEvent(new InputEvent("beforeinput", { bubbles:true, inputType:"insertText", data: textToInsert }));
-                editor.dispatchEvent(new InputEvent("input", { bubbles:true, inputType:"insertText", data: textToInsert }));
-            }
+        document.execCommand?.('selectAll', false, null);
+        document.execCommand?.('delete', false, null);
+
+        let inserted = false;
+        try { inserted = !!document.execCommand?.('insertText', false, textToInsert); } catch {}
+        if (!inserted) {
+            editor.textContent = textToInsert;
+            editor.dispatchEvent(new InputEvent('beforeinput', { bubbles:true, inputType:'insertText', data: textToInsert }));
+            editor.dispatchEvent(new InputEvent('input', { bubbles:true, inputType:'insertText', data: textToInsert }));
         }
 
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
         // Find submit button inside the same iframe doc
-        const submit = doc.querySelector('button[aria-label="Send"]')
-            || doc.querySelector('button[title="Send"]')
-            || doc.querySelector('button[type="submit"]')
-            || doc.querySelector('button svg.lucide-arrow-up, button svg.lucide-send, button svg.lucide-corner-down-left, button svg.lucide-arrow-right')?.closest('button')
-            || Array.from(doc.querySelectorAll('button')).find(b => {
-                if (!b.offsetParent || b.disabled) return false;
-                const rect = b.getBoundingClientRect();
-                return rect.bottom > window.innerHeight * 0.5 && rect.width < 80;
-            });
+        // Exclude cancel/stop buttons to avoid interrupting ongoing responses
+        function isStopBtn(b) {
+            const label = (b.getAttribute('aria-label') || b.getAttribute('title') || '').toLowerCase();
+            return label.includes('stop') || label.includes('cancel') || label.includes('interrupt')
+                || !!b.querySelector('svg.lucide-square, svg.lucide-circle-stop');
+        }
+
+        const submit = (!isStopBtn(doc.querySelector('button[aria-label="Send"]') || document.createElement('button')) && doc.querySelector('button[aria-label="Send"]'))
+            || (!isStopBtn(doc.querySelector('button[title="Send"]') || document.createElement('button')) && doc.querySelector('button[title="Send"]'))
+            || doc.querySelector('button[aria-label="Send Message"]')
+            || (() => {
+                const byIcon = doc.querySelector('button svg.lucide-arrow-up, button svg.lucide-send, button svg.lucide-corner-down-left')?.closest('button');
+                if (byIcon && !byIcon.disabled && !isStopBtn(byIcon)) return byIcon;
+                return null;
+            })();
 
         if (submit && !submit.disabled) {
             submit.click();
@@ -187,18 +206,18 @@ export async function injectMessage(cdp, text) {
         return { ok:true, method:"enter_keypress" };
     })()`;
 
-    for (const ctx of cdp.contexts) {
+    // Try without contextId first (main/default context), then each known context
+    const attempts = [null, ...cdp.contexts.map(c => c.id)];
+    for (const contextId of attempts) {
         try {
-            const result = await cdp.call("Runtime.evaluate", {
-                expression: EXPRESSION,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
+            const params = { expression: EXPRESSION, returnByValue: true, awaitPromise: true };
+            if (contextId) params.contextId = contextId;
+            const result = await cdp.call("Runtime.evaluate", params);
+            if (result.exceptionDetails) continue;
             if (result.result?.value) return result.result.value;
         } catch (e) { }
     }
-    return { ok: false, reason: "no_context" };
+    return { ok: false, reason: "no_context", contexts: cdp.contexts.length };
 }
 
 // Perform a toolbar action in Claude Code

@@ -27,6 +27,7 @@ const tabClaude = document.getElementById('tab-claude');
 let autoRefreshEnabled = true;
 let userIsScrolling = false;
 let userScrollLockUntil = 0; // Timestamp until which we respect user scroll
+let forceScrollBottomOnLoad = false; // After sending, always scroll to bottom
 let lastScrollPosition = 0;
 let ws = null;
 let idleTimer = null;
@@ -293,8 +294,6 @@ async function fetchTargets() {
         tabAntigravity.classList.toggle('connected', antTarget?.connected);
         tabClaude.classList.toggle('connected', claTarget?.connected);
 
-        // Show/hide Claude toolbar
-        updateClaudeToolbar(data.current);
 
         // If target switched and we are active, reload
         if (window.lastTarget && window.lastTarget !== data.current) {
@@ -322,45 +321,6 @@ async function switchTarget(id) {
     } catch (e) { console.error('[TARGET] Switch failed', e); }
 }
 
-// --- Claude Toolbar ---
-const claudeToolbar = document.getElementById('claudeToolbar');
-const btnEditAuto = document.getElementById('btnEditAuto');
-
-function updateClaudeToolbar(target) {
-    if (target === 'claude') {
-        claudeToolbar.classList.add('visible');
-        refreshEditAutoState();
-    } else {
-        claudeToolbar.classList.remove('visible');
-    }
-}
-
-async function refreshEditAutoState() {
-    try {
-        const res = await fetchWithAuth('/claude/toolbar-state');
-        const data = await res.json();
-        if (data.editAuto !== null) {
-            btnEditAuto.classList.toggle('active', !!data.editAuto);
-        }
-    } catch (e) { }
-}
-
-async function claudeAction(action) {
-    try {
-        const res = await fetchWithAuth('/claude/action', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action })
-        });
-        const data = await res.json();
-        if (action === 'toggle-edit-auto') {
-            setTimeout(refreshEditAutoState, 400);
-        }
-        if (!data.ok && data.error) {
-            console.warn('[Claude Action]', action, data.error);
-        }
-    } catch (e) { console.error('[Claude Action] failed', e); }
-}
 
 tabAntigravity?.addEventListener('click', () => switchTarget('antigravity'));
 tabClaude?.addEventListener('click', () => switchTarget('claude'));
@@ -520,12 +480,14 @@ async function loadSnapshot() {
         }
         chatContent.innerHTML = data.html;
 
-
         // Add mobile copy buttons to all code blocks
         addMobileCopyButtons();
 
         // Smart scroll behavior: respect user scroll, only auto-scroll when appropriate
-        if (isUserScrollLocked) {
+        if (forceScrollBottomOnLoad) {
+            forceScrollBottomOnLoad = false;
+            scrollToBottom();
+        } else if (isUserScrollLocked) {
             // User recently scrolled - try to maintain their approximate position
             // Use percentage-based restoration for better accuracy
             const scrollPercent = scrollHeight > 0 ? scrollPos / scrollHeight : 0;
@@ -736,6 +698,7 @@ async function sendMessage() {
         });
 
         // Always reload snapshot to check if message appeared
+        forceScrollBottomOnLoad = true;
         setTimeout(loadSnapshot, 300);
         setTimeout(loadSnapshot, 800);
         setTimeout(checkChatStatus, 1000);
@@ -964,8 +927,12 @@ async function showChatHistory() {
 
         chats.forEach(chat => {
             const safeTitle = chat.title.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            const isClaude = window.lastTarget === 'claude';
+            const onclick = isClaude
+                ? `hideChatHistory();`
+                : `hideChatHistory(); selectChat('${safeTitle}');`;
             html += `
-                <div class="history-card" onclick="hideChatHistory(); selectChat('${safeTitle}');">
+                <div class="history-card" onclick="${onclick}">
                     <div class="history-card-icon">
                         <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
