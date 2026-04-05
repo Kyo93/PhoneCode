@@ -1,4 +1,5 @@
 :root {
+    color-scheme: dark;
     /* Premium Dark Theme Tokens */
     --bg-app: #090e17;
     --bg-panel: #131c2f;
@@ -33,14 +34,11 @@ body {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     background: var(--bg-app);
     color: var(--text-main);
-    height: 100%;
-    /* Revert to standard percent height */
+    height: 100dvh; /* dynamic viewport height — adjusts when keyboard appears */
     position: relative;
-    /* Remove fixed */
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    /* Keep internal scroll */
 }
 
 
@@ -49,7 +47,8 @@ body {
     background: rgba(30, 41, 59, 0.8);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    padding: 14px 16px;
+    padding: 6px 12px;
+    padding-top: max(6px, env(safe-area-inset-top));
     border-bottom: 1px solid var(--border);
     display: flex;
     justify-content: space-between;
@@ -59,7 +58,7 @@ body {
 }
 
 .header h1 {
-    font-size: 17px;
+    font-size: 15px;
     font-weight: 700;
     color: var(--text-main);
     display: flex;
@@ -77,24 +76,23 @@ body {
 .header-controls {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 8px;
+    flex-shrink: 0;
 }
 
 .stop-btn {
     background: #ef4444;
     color: #fff;
     border: none;
-    padding: 4px 8px;
-    font-size: 11px;
+    padding: 8px 14px;
+    min-height: 44px;
+    font-size: 12px;
     font-weight: 600;
     border-radius: 4px;
     cursor: pointer;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
-    display: none;
-    /* Only show when needed or always show? User asked for feature 1 */
-    /* I'll make it always visible or toggleable */
     display: flex;
     align-items: center;
     gap: 4px;
@@ -109,7 +107,9 @@ body {
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    padding: 4px;
+    padding: 10px;
+    min-width: 44px;
+    min-height: 44px;
     border-radius: 4px;
     display: flex;
     align-items: center;
@@ -136,8 +136,10 @@ body {
     border: none;
     color: #fff;
     cursor: pointer;
-    padding: 7px;
-    border-radius: 8px;
+    padding: 12px;
+    min-width: 44px;
+    min-height: 44px;
+    border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -168,7 +170,9 @@ body {
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    padding: 4px;
+    padding: 10px;
+    min-width: 44px;
+    min-height: 44px;
     border-radius: 4px;
     display: flex;
     align-items: center;
@@ -288,6 +292,11 @@ body {
     overflow-x: hidden;
     position: relative;
     background: var(--bg-app);
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    /* Ensure touch scroll works on Android/iOS */
+    touch-action: pan-y;
+    min-height: 0;
 }
 
 .chat-content {
@@ -320,11 +329,118 @@ body {
     }
 }
 
+/* Target Tabs (Antigravity / Claude Code) */
+.target-tabs {
+    display: flex;
+    background: rgba(19, 28, 47, 0.95);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.target-tabs::-webkit-scrollbar { display: none; }
+
+.target-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 12px;
+    min-height: 36px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.target-tab.active {
+    color: var(--text-main);
+    border-bottom-color: var(--accent);
+}
+
+.target-tab:active {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.target-tab .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.target-tab.connected .status-dot {
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
+}
+
+/* Claude Code Toolbar */
+.claude-toolbar {
+    display: none;
+    gap: 6px;
+    padding: 5px 12px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.claude-toolbar::-webkit-scrollbar { display: none; }
+
+.claude-toolbar.visible { display: flex; }
+
+.claude-tool-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    color: var(--text-main);
+    padding: 10px 14px;
+    min-height: 44px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+}
+
+.claude-tool-btn:active {
+    transform: scale(0.95);
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.claude-tool-btn.active {
+    background: rgba(99, 179, 237, 0.18);
+    border-color: rgba(99, 179, 237, 0.4);
+    color: #90cdf4;
+}
+
+.claude-tool-btn--bypass {
+    border-color: rgba(252, 129, 74, 0.3);
+    color: #fc814a;
+}
+
+.claude-tool-btn--bypass:active {
+    background: rgba(252, 129, 74, 0.15);
+}
+
 /* Quick Actions Bar */
 .quick-actions {
     display: flex;
-    gap: 10px;
-    padding: 12px 16px;
+    gap: 8px;
+    padding: 6px 12px;
     overflow-x: auto;
     background: transparent;
     /* Hide scrollbar for cleaner look */
@@ -338,11 +454,9 @@ body {
 
 .action-chip {
     background: rgba(255, 255, 255, 0.04);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.08);
     color: var(--text-main);
-    padding: 8px 18px;
+    padding: 7px 14px;
     border-radius: 24px;
     font-size: 13px;
     font-weight: 500;
@@ -453,8 +567,8 @@ textarea::-webkit-scrollbar {
     background: var(--accent-gradient);
     border: none;
     color: #ffffff;
-    width: 38px;
-    height: 38px;
+    width: 44px;
+    height: 44px;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -496,7 +610,7 @@ textarea::-webkit-scrollbar {
 /* Floating Action Button (Scroll Down) */
 .fab {
     position: fixed;
-    bottom: 90px;
+    bottom: calc(90px + env(safe-area-inset-bottom));
     right: 20px;
     width: 44px;
     height: 44px;
@@ -552,7 +666,7 @@ textarea::-webkit-scrollbar {
     background: rgba(30, 41, 59, 0.6);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    padding: 10px 16px;
+    padding: 5px 12px;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -566,7 +680,8 @@ textarea::-webkit-scrollbar {
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.1);
     color: var(--text-main);
-    padding: 6px 14px;
+    padding: 10px 14px;
+    min-height: 44px;
     border-radius: 20px;
     font-size: 13px;
     cursor: pointer;
@@ -704,6 +819,7 @@ textarea::-webkit-scrollbar {
     align-items: center;
     justify-content: space-between;
     padding: 16px;
+    padding-top: max(16px, env(safe-area-inset-top));
     background: rgba(30, 41, 59, 0.8);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
@@ -721,7 +837,9 @@ textarea::-webkit-scrollbar {
     border: none;
     color: var(--text-main);
     cursor: pointer;
-    padding: 4px;
+    padding: 10px;
+    min-width: 44px;
+    min-height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -731,6 +849,7 @@ textarea::-webkit-scrollbar {
     flex: 1;
     overflow-y: auto;
     padding: 0;
+    padding-bottom: env(safe-area-inset-bottom);
 }
 
 /* --- Premium History Styles --- */

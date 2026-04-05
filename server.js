@@ -13,6 +13,11 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { inspectUI } from './ui_inspector.js';
 import { execSync } from 'child_process';
+import * as antigravity from './targets/antigravity.js';
+import * as claude from './targets/claude.js';
+
+// Target registry — add new targets here only
+const TARGETS = { antigravity, claude };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -110,36 +115,18 @@ function getJson(url) {
     });
 }
 
-// Find Antigravity CDP endpoints (Workbench and Extensions)
+// Find CDP endpoints for all registered targets
 async function discoverCDP() {
-    const results = {
-        antigravity: null,
-        claude: null
-    };
+    const results = {};
     const errors = [];
 
     for (const port of PORTS) {
         try {
             const list = await getJson(`http://127.0.0.1:${port}/json/list`);
-
-            // 1. Standard Workbench (Antigravity)
-            const workbench = list.find(t => t.url?.includes('workbench.html') || (t.title && (t.title.includes('workbench') || t.title.includes('Antigravity'))));
-            if (workbench && workbench.webSocketDebuggerUrl) {
-                results.antigravity = { port, url: workbench.webSocketDebuggerUrl, title: workbench.title };
-            }
-
-            // 2. Claude Code Extension (Webview)
-            // There may be multiple iframes with extensionId=Anthropic.claude-code:
-            // - The outer webview container (index.html with purpose=webviewView)
-            // - The inner active-frame iframe (also same extensionId, different id param)
-            // The inner frame is the one with the actual Claude Code UI.
-            // Prioritize: purpose=webviewView first, otherwise last match (inner frame comes last).
-            const claudeTargets = list.filter(t => t.url?.includes('extensionId=Anthropic.claude-code') || t.title?.includes('Claude Code'));
-            if (claudeTargets.length > 0) {
-                const viewTarget = claudeTargets.find(t => t.url?.includes('purpose=webviewView'));
-                const best = viewTarget || claudeTargets[claudeTargets.length - 1];
-                if (best && best.webSocketDebuggerUrl) {
-                    results.claude = { port, url: best.webSocketDebuggerUrl, title: best.title };
+            for (const [name, target] of Object.entries(TARGETS)) {
+                if (!results[name]) {
+                    const found = target.discover(list);
+                    if (found) results[name] = { port, ...found };
                 }
             }
         } catch (e) {
@@ -147,7 +134,7 @@ async function discoverCDP() {
         }
     }
 
-    if (!results.antigravity && !results.claude) {
+    if (Object.keys(results).length === 0) {
         const errorSummary = errors.length ? `Errors: ${errors.join(', ')}` : 'No ports responding';
         throw new Error(`CDP not found. ${errorSummary}`);
     }
@@ -215,322 +202,6 @@ async function connectCDP(url) {
     await new Promise(r => setTimeout(r, 1000));
 
     return { ws, call, contexts };
-}
-
-// Capture chat snapshot
-async function captureSnapshot(cdp, targetType = 'antigravity') {
-    const isClaude = targetType === 'claude';
-
-    const CAPTURE_SCRIPT = `(async () => {
-        // Selector strategy based on target
-        let cascade;
-        if (${isClaude}) {
-            // Claude Code extension uses specific containers - usually full body or a root div
-            cascade = document.body;
-        } else {
-            cascade = document.getElementById('conversation') || document.getElementById('chat') || document.getElementById('cascade');
-        }
-
-        if (!cascade) {
-            // Debug info
-            const body = document.body;
-            const childIds = Array.from(body.children).map(c => c.id).filter(id => id).join(', ');
-            return { error: 'chat container not found', debug: { hasBody: !!body, availableIds: childIds } };
-        }
-        
-        const cascadeStyles = window.getComputedStyle(cascade);
-        
-        // Find the main scrollable container
-        const scrollContainer = cascade.querySelector('.overflow-y-auto, [data-scroll-area]') || cascade;
-        const scrollInfo = {
-            scrollTop: scrollContainer.scrollTop,
-            scrollHeight: scrollContainer.scrollHeight,
-            clientHeight: scrollContainer.clientHeight,
-            scrollPercent: scrollContainer.scrollTop / (scrollContainer.scrollHeight - scrollContainer.clientHeight) || 0
-        };
-        
-        // Clone cascade to modify it without affecting the original
-        const clone = cascade.cloneNode(true);
-
-        // For Claude Code: fix inline styles that break mobile scrolling
-        if (${isClaude}) {
-            clone.querySelectorAll('*').forEach(el => {
-                try {
-                    const s = el.getAttribute('style');
-                    if (!s) return;
-                    let ns = s
-                        .replace(/position\s*:\s*fixed/gi, 'position: relative')
-                        .replace(/position\s*:\s*absolute/gi, 'position: relative')
-                        .replace(/overflow\s*:\s*hidden/gi, 'overflow: visible')
-                        .replace(/overflow-y\s*:\s*hidden/gi, 'overflow-y: visible')
-                        .replace(/height\s*:\s*100vh/gi, 'height: auto')
-                        .replace(/min-height\s*:\s*100vh/gi, 'min-height: 0')
-                        .replace(/height\s*:\s*100%/gi, 'height: auto');
-                    if (ns !== s) el.setAttribute('style', ns);
-                } catch(e) {}
-            });
-        }
-
-        // Aggressively remove the entire interaction/input/review area
-        try {
-            // 1. Identify common interaction wrappers by class combinations
-            const interactionSelectors = [
-                '.relative.flex.flex-col.gap-8',
-                '.flex.grow.flex-col.justify-start.gap-8',
-                'div[class*="interaction-area"]',
-                '.p-1.bg-gray-500\\/10',
-                '.outline-solid.justify-between',
-                '[contenteditable="true"]'
-            ];
-
-            interactionSelectors.forEach(selector => {
-                clone.querySelectorAll(selector).forEach(el => {
-                    try {
-                        // For the editor, we want to remove its interaction container
-                        if (selector === '[contenteditable="true"]') {
-                            const area = el.closest('.relative.flex.flex-col.gap-8') || 
-                                         el.closest('.flex.grow.flex-col.justify-start.gap-8') ||
-                                         el.closest('div[id^="interaction"]') ||
-                                         el.parentElement?.parentElement;
-                            if (area && area !== clone) area.remove();
-                            else el.remove();
-                        } else {
-                            el.remove();
-                        }
-                    } catch(e) {}
-                });
-            });
-
-            // 2. Text-based cleanup for stray status bars
-            const allElements = clone.querySelectorAll('*');
-            allElements.forEach(el => {
-                try {
-                    const text = (el.innerText || '').toLowerCase();
-                    if (text.includes('review changes') || text.includes('files with changes') || text.includes('context found')) {
-                        // If it's a small structural element or has buttons, it's likely a bar
-                        if (el.children.length < 10 || el.querySelector('button') || el.classList?.contains('justify-between')) {
-                            el.style.display = 'none'; // Use both hide and remove
-                            el.remove();
-                        }
-                    }
-                } catch (e) {}
-            });
-        } catch (globalErr) { }
-
-        // Convert local images to base64
-        const images = clone.querySelectorAll('img');
-        const promises = Array.from(images).map(async (img) => {
-            const rawSrc = img.getAttribute('src');
-            if (rawSrc && (rawSrc.startsWith('/') || rawSrc.startsWith('vscode-file:')) && !rawSrc.startsWith('data:')) {
-                try {
-                    const res = await fetch(rawSrc);
-                    const blob = await res.blob();
-                    await new Promise(r => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => { img.src = reader.result; r(); };
-                        reader.onerror = () => r();
-                        reader.readAsDataURL(blob);
-                    });
-                } catch(e) {}
-            }
-        });
-        await Promise.all(promises);
-
-        // Fix inline file references: Antigravity nests <div> elements inside
-        // <span> and <p> tags (e.g. file-type icons). Browsers auto-close <p> and
-        // <span> when they encounter a <div>, causing unwanted line breaks.
-        // Solution: Convert any <div> inside an inline parent to a <span>.
-        try {
-            const inlineTags = new Set(['SPAN', 'P', 'A', 'LABEL', 'EM', 'STRONG', 'CODE']);
-            const allDivs = Array.from(clone.querySelectorAll('div'));
-            for (const div of allDivs) {
-                try {
-                    if (!div.parentNode) continue;
-                    const parent = div.parentElement;
-                    if (!parent) continue;
-                    
-                    const parentIsInline = inlineTags.has(parent.tagName) || 
-                        (parent.className && (parent.className.includes('inline-flex') || parent.className.includes('inline-block')));
-                        
-                    if (parentIsInline) {
-                        const span = document.createElement('span');
-                        // MOVE children instead of copying (prevents orphaning nested divs)
-                        while (div.firstChild) {
-                            span.appendChild(div.firstChild);
-                        }
-                        if (div.className) span.className = div.className;
-                        if (div.getAttribute('style')) span.setAttribute('style', div.getAttribute('style'));
-                        span.style.display = 'inline-flex';
-                        span.style.alignItems = 'center';
-                        span.style.verticalAlign = 'middle';
-                        div.replaceWith(span);
-                    }
-                } catch(e) {}
-            }
-        } catch(e) {}
-        
-        const html = clone.outerHTML;
-        
-        const rules = [];
-        for (const sheet of document.styleSheets) {
-            try {
-                for (const rule of sheet.cssRules) {
-                    rules.push(rule.cssText);
-                }
-            } catch (e) { }
-        }
-        const allCSS = rules.join('\\n');
-        
-        return {
-            html: html,
-            css: allCSS,
-            backgroundColor: cascadeStyles.backgroundColor,
-            color: cascadeStyles.color,
-            fontFamily: cascadeStyles.fontFamily,
-            scrollInfo: scrollInfo,
-            stats: {
-                nodes: clone.getElementsByTagName('*').length,
-                htmlSize: html.length,
-                cssSize: allCSS.length
-            }
-        };
-    })()`;
-
-    for (const ctx of cdp.contexts) {
-        try {
-            // console.log(`Trying context ${ctx.id} (${ctx.name || ctx.origin})...`);
-            const result = await cdp.call("Runtime.evaluate", {
-                expression: CAPTURE_SCRIPT,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-
-            if (result.exceptionDetails) {
-                // console.log(`Context ${ctx.id} exception:`, result.exceptionDetails);
-                continue;
-            }
-
-            if (result.result && result.result.value) {
-                const val = result.result.value;
-                if (val.error) {
-                    // console.log(`Context ${ctx.id} script error:`, val.error);
-                    // if (val.debug) console.log(`   Debug info:`, JSON.stringify(val.debug));
-                } else {
-                    return val;
-                }
-            }
-        } catch (e) {
-            console.log(`Context ${ctx.id} connection error:`, e.message);
-        }
-    }
-
-    return null;
-}
-
-// Inject message into target
-async function injectMessage(cdp, text, targetType = 'antigravity') {
-    const isClaude = targetType === 'claude';
-    // Use JSON.stringify for robust escaping (handles ", \, newlines, backticks, unicode, etc.)
-    const safeText = JSON.stringify(text);
-
-    const EXPRESSION = `(async () => {
-        const cancel = document.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
-        if (cancel && cancel.offsetParent !== null) return { ok:false, reason:"busy" };
-
-        let editor;
-        if (${isClaude}) {
-            // Claude Code renders inside #active-frame (same-origin iframe in VS Code webview)
-            // Input is <div contenteditable="plaintext-only">, not "true"
-            const frame = document.getElementById('active-frame');
-            const doc = frame?.contentDocument || frame?.contentWindow?.document || document;
-            editor = doc.querySelector('[contenteditable="plaintext-only"], [contenteditable="true"], textarea');
-        } else {
-            const editors = [...document.querySelectorAll('#conversation [contenteditable="true"], #chat [contenteditable="true"], #cascade [contenteditable="true"]')]
-                .filter(el => el.offsetParent !== null);
-            editor = editors.at(-1);
-        }
-
-        if (!editor) return { ok:false, error:"editor_not_found" };
-
-        const textToInsert = ${safeText};
-
-        editor.focus();
-        if (editor.tagName === 'TEXTAREA' || editor.tagName === 'INPUT') {
-            // Use native setter to bypass React's controlled component interception
-            const proto = editor.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-            const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-            if (nativeSetter) {
-                nativeSetter.call(editor, textToInsert);
-            } else {
-                editor.value = textToInsert;
-            }
-            editor.dispatchEvent(new Event('input', { bubbles: true }));
-            editor.dispatchEvent(new Event('change', { bubbles: true }));
-        } else {
-            document.execCommand?.("selectAll", false, null);
-            document.execCommand?.("delete", false, null);
-
-            let inserted = false;
-            try { inserted = !!document.execCommand?.("insertText", false, textToInsert); } catch {}
-            if (!inserted) {
-                editor.textContent = textToInsert;
-                editor.dispatchEvent(new InputEvent("beforeinput", { bubbles:true, inputType:"insertText", data: textToInsert }));
-                editor.dispatchEvent(new InputEvent("input", { bubbles:true, inputType:"insertText", data: textToInsert }));
-            }
-        }
-
-        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-
-        // Submit button finding based on target
-        let submit;
-        if (${isClaude}) {
-           // Claude Code - query inside #active-frame (same-origin)
-           const frame2 = document.getElementById('active-frame');
-           const doc2 = frame2?.contentDocument || frame2?.contentWindow?.document || document;
-           submit = doc2.querySelector('button[aria-label="Send"]')
-               || doc2.querySelector('button[title="Send"]')
-               || doc2.querySelector('button[type="submit"]')
-               || doc2.querySelector('button svg.lucide-arrow-up, button svg.lucide-send, button svg.lucide-corner-down-left, button svg.lucide-arrow-right')?.closest('button')
-               || Array.from(doc2.querySelectorAll('button')).find(b => {
-                   if (!b.offsetParent || b.disabled) return false;
-                   const rect = b.getBoundingClientRect();
-                   return rect.bottom > window.innerHeight * 0.5 && rect.width < 80;
-               });
-        } else {
-           submit = document.querySelector("svg.lucide-arrow-right")?.closest("button");
-        }
-
-        if (submit && !submit.disabled) {
-            submit.click();
-            return { ok:true, method:"click_submit" };
-        }
-
-        // Trigger Enter key fallback
-        const enterEvt = { bubbles: true, cancelable: true, key: "Enter", code: "Enter", charCode: 13, keyCode: 13, which: 13 };
-        editor.dispatchEvent(new KeyboardEvent("keydown", enterEvt));
-        editor.dispatchEvent(new KeyboardEvent("keypress", enterEvt));
-        editor.dispatchEvent(new KeyboardEvent("keyup", enterEvt));
-        
-        return { ok:true, method:"enter_keypress" };
-    })()`;
-
-    for (const ctx of cdp.contexts) {
-        try {
-            const result = await cdp.call("Runtime.evaluate", {
-                expression: EXPRESSION,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-
-            if (result.result && result.result.value) {
-                return result.result.value;
-            }
-        } catch (e) { }
-    }
-
-    return { ok: false, reason: "no_context" };
 }
 
 // Set functionality mode (Fast vs Planning)
@@ -1523,7 +1194,7 @@ async function startPolling(wss) {
         }
 
         try {
-            const snapshot = await captureSnapshot(cdp, currentTarget);
+            const snapshot = await TARGETS[currentTarget].captureSnapshot(cdp);
             if (snapshot && !snapshot.error) {
                 const hash = hashString(snapshot.html);
 
@@ -1773,7 +1444,7 @@ async function createServer() {
             return res.status(503).json({ error: 'CDP not connected' });
         }
 
-        const result = await injectMessage(cdp, message, currentTarget);
+        const result = await TARGETS[currentTarget].injectMessage(cdp, message);
 
         console.log(`📨 /send [${currentTarget}] contexts:${cdp.contexts.length} result:${JSON.stringify(result)}`);
 
@@ -2088,6 +1759,25 @@ async function main() {
             }
 
             res.json({ success: true, current: currentTarget });
+        });
+
+        // Claude Code toolbar actions
+        app.post('/claude/action', async (req, res) => {
+            const { action } = req.body;
+            if (!action) return res.status(400).json({ error: 'action required' });
+
+            const cdp = cdpConnections.get('claude');
+            if (!cdp) return res.status(503).json({ error: 'Claude CDP not connected' });
+
+            const result = await claude.performAction(cdp, action);
+            res.json(result);
+        });
+
+        app.get('/claude/toolbar-state', async (req, res) => {
+            const cdp = cdpConnections.get('claude');
+            if (!cdp) return res.json({ editAuto: null });
+            const state = await claude.getToolbarState(cdp);
+            res.json(state);
         });
 
         // Remote Click

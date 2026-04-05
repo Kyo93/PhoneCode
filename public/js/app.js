@@ -33,6 +33,205 @@ let idleTimer = null;
 let lastHash = '';
 let currentMode = 'Fast';
 let chatIsOpen = true; // Track if a chat is currently open
+let lastDynamicCssHash = ''; // Track last injected dynamic CSS to skip unchanged updates
+
+// --- Static Dark Mode Overrides (injected once, never rebuilt) ---
+const STATIC_DARK_CSS = `
+/* --- FORCE DARK MODE OVERRIDES --- */
+:root {
+    --bg-app: #0f172a;
+    --text-main: #f8fafc;
+    --text-muted: #94a3b8;
+    --border-color: #334155;
+}
+
+#conversation, #chat, #cascade {
+    background-color: transparent !important;
+    color: var(--text-main) !important;
+    font-family: 'Inter', system-ui, sans-serif !important;
+    position: relative !important;
+    height: auto !important;
+    width: 100% !important;
+}
+
+#conversation > div, #chat > div, #cascade > div {
+    position: static !important;
+}
+[style*="position: absolute"], [style*="position: fixed"],
+[data-headlessui-state], [id*="headlessui"] {
+    position: absolute !important;
+}
+
+#conversation p, #chat p, #cascade p,
+#conversation h1, #chat h1, #cascade h1,
+#conversation h2, #chat h2, #cascade h2,
+#conversation h3, #chat h3, #cascade h3,
+#conversation h4, #chat h4, #cascade h4,
+#conversation h5, #chat h5, #cascade h5,
+#conversation span, #chat span, #cascade span,
+#conversation div, #chat div, #cascade div,
+#conversation li, #chat li, #cascade li {
+    color: inherit !important;
+}
+
+[style*="color: rgb(0, 0, 0)"], [style*="color: black"],
+[style*="color:#000"], [style*="color: #000"] {
+    color: #e2e8f0 !important;
+}
+
+#conversation a, #chat a, #cascade a {
+    color: #60a5fa !important;
+    text-decoration: underline;
+}
+
+img[src^="/c:"], img[src^="/C:"], img[src*="AppData"] {
+    display: none !important;
+}
+
+img, svg {
+    display: inline !important;
+    vertical-align: middle !important;
+}
+div:has(> img[src^="data:"]), div:has(> img[alt]), span:has(> img) {
+    display: inline !important;
+    vertical-align: middle !important;
+}
+[class*="inline-flex"], [class*="inline-block"], [class*="items-center"]:has(img) {
+    display: inline-flex !important;
+    vertical-align: middle !important;
+}
+
+:not(pre) > code {
+    padding: 0px 2px !important;
+    border-radius: 2px !important;
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    font-size: 0.82em !important;
+    line-height: 1 !important;
+    white-space: normal !important;
+}
+
+pre, code, .monaco-editor-background, [class*="terminal"] {
+    background-color: #1e293b !important;
+    color: #e2e8f0 !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    border-radius: 3px;
+    border: 1px solid #334155;
+}
+
+pre {
+    position: relative !important;
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+    padding: 4px 6px !important;
+    margin: 2px 0 !important;
+    display: block !important;
+    width: 100% !important;
+}
+
+pre.has-copy-btn { padding-right: 28px !important; }
+
+pre.single-line-pre {
+    display: inline-block !important;
+    width: auto !important;
+    max-width: 100% !important;
+    padding: 0px 4px !important;
+    margin: 0px !important;
+    vertical-align: middle !important;
+    background-color: #1e293b !important;
+    font-size: 0.85em !important;
+}
+
+pre.single-line-pre > code {
+    display: inline !important;
+    white-space: nowrap !important;
+}
+
+pre:not(.single-line-pre) > code {
+    display: block !important;
+    width: 100% !important;
+    overflow-x: auto !important;
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+.mobile-copy-btn {
+    position: absolute !important;
+    top: 2px !important;
+    right: 2px !important;
+    background: rgba(30, 41, 59, 0.5) !important;
+    color: #94a3b8 !important;
+    border: none !important;
+    width: 44px !important;
+    height: 44px !important;
+    padding: 0 !important;
+    cursor: pointer !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border-radius: 4px !important;
+    transition: all 0.2s ease !important;
+    -webkit-tap-highlight-color: transparent !important;
+    z-index: 10 !important;
+    margin: 0 !important;
+}
+.mobile-copy-btn:hover, .mobile-copy-btn:focus {
+    background: rgba(59, 130, 246, 0.2) !important;
+    color: #60a5fa !important;
+}
+.mobile-copy-btn svg {
+    width: 20px !important;
+    height: 20px !important;
+    stroke: currentColor !important;
+    stroke-width: 2 !important;
+    fill: none !important;
+}
+
+blockquote {
+    border-left: 3px solid #3b82f6 !important;
+    background: rgba(59, 130, 246, 0.1) !important;
+    color: #cbd5e1 !important;
+    padding: 8px 12px !important;
+    margin: 8px 0 !important;
+}
+
+table { border-collapse: collapse !important; width: 100% !important; border: 1px solid #334155 !important; }
+th, td { border: 1px solid #334155 !important; padding: 8px !important; color: #e2e8f0 !important; }
+
+::-webkit-scrollbar { width: 0 !important; }
+
+[style*="background-color: rgb(255, 255, 255)"],
+[style*="background-color: white"],
+[style*="background: white"] {
+    background-color: transparent !important;
+}
+
+#chatContent > * {
+    position: relative !important; height: auto !important;
+    min-height: 0 !important; max-height: none !important; overflow: visible !important;
+}
+#chatContent > * > * {
+    position: relative !important; height: auto !important;
+    min-height: 0 !important; max-height: none !important; overflow: visible !important;
+}
+#chatContent [style*="position: fixed"], #chatContent [style*="position:fixed"] { position: relative !important; }
+#chatContent [style*="height: 100vh"], #chatContent [style*="height:100vh"],
+#chatContent [style*="overflow: hidden"], #chatContent [style*="overflow:hidden"] {
+    height: auto !important; overflow: visible !important;
+}
+
+#chatContent, #chatContent * { touch-action: pan-y; }
+#chatContent pre, #chatContent pre * { touch-action: pan-x pan-y; }
+`;
+
+// Inject static overrides once at startup
+(function initStaticStyles() {
+    const tag = document.createElement('style');
+    tag.id = 'cdp-static-styles';
+    tag.textContent = STATIC_DARK_CSS;
+    document.head.appendChild(tag);
+})();
 
 
 // --- Auth Utilities ---
@@ -82,17 +281,20 @@ async function fetchTargets() {
     try {
         const res = await fetchWithAuth('/targets');
         const data = await res.json();
-        
+
         // Update tab styles
         tabAntigravity.classList.toggle('active', data.current === 'antigravity');
         tabClaude.classList.toggle('active', data.current === 'claude');
-        
+
         // Update connection dots
         const antTarget = data.targets.find(t => t.id === 'antigravity');
         const claTarget = data.targets.find(t => t.id === 'claude');
-        
+
         tabAntigravity.classList.toggle('connected', antTarget?.connected);
         tabClaude.classList.toggle('connected', claTarget?.connected);
+
+        // Show/hide Claude toolbar
+        updateClaudeToolbar(data.current);
 
         // If target switched and we are active, reload
         if (window.lastTarget && window.lastTarget !== data.current) {
@@ -114,11 +316,50 @@ async function switchTarget(id) {
         if (data.success) {
             console.log('[TARGET] Switched to', id);
             fetchTargets();
-            // Clear current chat view for a moment to show loading
             chatContent.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
             setTimeout(loadSnapshot, 300);
         }
     } catch (e) { console.error('[TARGET] Switch failed', e); }
+}
+
+// --- Claude Toolbar ---
+const claudeToolbar = document.getElementById('claudeToolbar');
+const btnEditAuto = document.getElementById('btnEditAuto');
+
+function updateClaudeToolbar(target) {
+    if (target === 'claude') {
+        claudeToolbar.classList.add('visible');
+        refreshEditAutoState();
+    } else {
+        claudeToolbar.classList.remove('visible');
+    }
+}
+
+async function refreshEditAutoState() {
+    try {
+        const res = await fetchWithAuth('/claude/toolbar-state');
+        const data = await res.json();
+        if (data.editAuto !== null) {
+            btnEditAuto.classList.toggle('active', !!data.editAuto);
+        }
+    } catch (e) { }
+}
+
+async function claudeAction(action) {
+    try {
+        const res = await fetchWithAuth('/claude/action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action })
+        });
+        const data = await res.json();
+        if (action === 'toggle-edit-auto') {
+            setTimeout(refreshEditAutoState, 400);
+        }
+        if (!data.ok && data.error) {
+            console.warn('[Claude Action]', action, data.error);
+        }
+    } catch (e) { console.error('[Claude Action] failed', e); }
 }
 
 tabAntigravity?.addEventListener('click', () => switchTarget('antigravity'));
@@ -264,230 +505,19 @@ async function loadSnapshot() {
             if (statsText) statsText.textContent = `${nodes} Nodes · ${kbs}KB`;
         }
 
-        // --- CSS INJECTION (Cached) ---
-        let styleTag = document.getElementById('cdp-styles');
-        if (!styleTag) {
-            styleTag = document.createElement('style');
-            styleTag.id = 'cdp-styles';
-            document.head.appendChild(styleTag);
+        // --- CSS INJECTION (Dynamic only — static overrides are in cdp-static-styles) ---
+        // Only update if the snapshot CSS actually changed (avoids layout recalc on 120Hz)
+        const newCssHash = data.css ? data.css.length + ':' + data.css.slice(0, 64) : '';
+        if (newCssHash !== lastDynamicCssHash) {
+            let styleTag = document.getElementById('cdp-dynamic-styles');
+            if (!styleTag) {
+                styleTag = document.createElement('style');
+                styleTag.id = 'cdp-dynamic-styles';
+                document.head.appendChild(styleTag);
+            }
+            styleTag.textContent = data.css || '';
+            lastDynamicCssHash = newCssHash;
         }
-
-        const darkModeOverrides = '/* --- BASE SNAPSHOT CSS --- */\n' +
-            data.css +
-            '\n\n/* --- FORCE DARK MODE OVERRIDES --- */\n' +
-            ':root {\n' +
-            '    --bg-app: #0f172a;\n' +
-            '    --text-main: #f8fafc;\n' +
-            '    --text-muted: #94a3b8;\n' +
-            '    --border-color: #334155;\n' +
-            '}\n' +
-            '\n' +
-            '#conversation, #chat, #cascade {\n' +
-            '    background-color: transparent !important;\n' +
-            '    color: var(--text-main) !important;\n' +
-            '    font-family: \'Inter\', system-ui, sans-serif !important;\n' +
-            '    position: relative !important;\n' +
-            '    height: auto !important;\n' +
-            '    width: 100% !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* Fix stacking BUT preserve absolute/fixed positioning for dropdowns */\n' +
-            '#conversation > div, #chat > div, #cascade > div {\n' +
-            '    position: static !important;\n' +
-            '}\n' +
-            '/* Preserve absolute positioning needed for dropdowns, tooltips, popups */\n' +
-            '[style*="position: absolute"], [style*="position: fixed"],\n' +
-            '[data-headlessui-state], [id*="headlessui"] {\n' +
-            '    position: absolute !important;\n' +
-            '}\n' +
-            '\n' +
-            '#conversation p, #chat p, #cascade p, #conversation h1, #chat h1, #cascade h1, #conversation h2, #chat h2, #cascade h2, #conversation h3, #chat h3, #cascade h3, #conversation h4, #chat h4, #cascade h4, #conversation h5, #chat h5, #cascade h5, #conversation span, #chat span, #cascade span, #conversation div, #chat div, #cascade div, #conversation li, #chat li, #cascade li {\n' +
-            '    color: inherit !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* Force black inline text to white */\n' +
-            '[style*="color: rgb(0, 0, 0)"], [style*="color: black"],\n' +
-            '[style*="color:#000"], [style*="color: #000"] {\n' +
-            '    color: #e2e8f0 !important;\n' +
-            '}\n' +
-            '\n' +
-            '#conversation a, #chat a, #cascade a {\n' +
-            '    color: #60a5fa !important;\n' +
-            '    text-decoration: underline;\n' +
-            '}\n' +
-            '\n' +
-            '/* Hide broken local file icons (served from /c:/Users/... paths) */\n' +
-            'img[src^="/c:"], img[src^="/C:"], img[src*="AppData"] {\n' +
-            '    display: none !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* Override Tailwind default block display for embedded file icons */\n' +
-            'img, svg {\n' +
-            '    display: inline !important;\n' +
-            '    vertical-align: middle !important;\n' +
-            '}\n' +
-            '/* Force file-reference wrappers (icon + filename) to stay inline */\n' +
-            'div:has(> img[src^="data:"]), div:has(> img[alt]), span:has(> img) {\n' +
-            '    display: inline !important;\n' +
-            '    vertical-align: middle !important;\n' +
-            '}\n' +
-            '/* Inline-flex containers from Antigravity (e.g. file mentions) */\n' +
-            '[class*="inline-flex"], [class*="inline-block"], [class*="items-center"]:has(img) {\n' +
-            '    display: inline-flex !important;\n' +
-            '    vertical-align: middle !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* Fix Inline Code - Ultra-compact */\n' +
-            ':not(pre) > code {\n' +
-            '    padding: 0px 2px !important;\n' +
-            '    border-radius: 2px !important;\n' +
-            '    background-color: rgba(255, 255, 255, 0.1) !important;\n' +
-            '    font-size: 0.82em !important;\n' +
-            '    line-height: 1 !important;\n' +
-            '    white-space: normal !important;\n' +
-            '}\n' +
-            '\n' +
-            'pre, code, .monaco-editor-background, [class*="terminal"] {\n' +
-            '    background-color: #1e293b !important;\n' +
-            '    color: #e2e8f0 !important;\n' +
-            '    font-family: \'JetBrains Mono\', monospace !important;\n' +
-            '    border-radius: 3px;\n' +
-            '    border: 1px solid #334155;\n' +
-            '}\n' +
-            '                \n' +
-            '/* Multi-line Code Block - Minimal */\n' +
-            'pre {\n' +
-            '    position: relative !important;\n' +
-            '    white-space: pre-wrap !important; \n' +
-            '    word-break: break-word !important;\n' +
-            '    padding: 4px 6px !important;\n' +
-            '    margin: 2px 0 !important;\n' +
-            '    display: block !important;\n' +
-            '    width: 100% !important;\n' +
-            '}\n' +
-            '                \n' +
-            'pre.has-copy-btn {\n' +
-            '    padding-right: 28px !important;\n' +
-            '}\n' +
-            '                \n' +
-            '/* Single-line Code Block - Minimal */\n' +
-            'pre.single-line-pre {\n' +
-            '    display: inline-block !important;\n' +
-            '    width: auto !important;\n' +
-            '    max-width: 100% !important;\n' +
-            '    padding: 0px 4px !important;\n' +
-            '    margin: 0px !important;\n' +
-            '    vertical-align: middle !important;\n' +
-            '    background-color: #1e293b !important;\n' +
-            '    font-size: 0.85em !important;\n' +
-            '}\n' +
-            '                \n' +
-            'pre.single-line-pre > code {\n' +
-            '    display: inline !important;\n' +
-            '    white-space: nowrap !important;\n' +
-            '}\n' +
-            '                \n' +
-            'pre:not(.single-line-pre) > code {\n' +
-            '    display: block !important;\n' +
-            '    width: 100% !important;\n' +
-            '    overflow-x: auto !important;\n' +
-            '    background: transparent !important;\n' +
-            '    border: none !important;\n' +
-            '    padding: 0 !important;\n' +
-            '    margin: 0 !important;\n' +
-            '}\n' +
-            '                \n' +
-            '.mobile-copy-btn {\n' +
-            '    position: absolute !important;\n' +
-            '    top: 2px !important;\n' +
-            '    right: 2px !important;\n' +
-            '    background: rgba(30, 41, 59, 0.5) !important;\n' +
-            '    color: #94a3b8 !important;\n' +
-            '    border: none !important;\n' +
-            '    width: 24px !important; \n' +
-            '    height: 24px !important;\n' +
-            '    padding: 0 !important;\n' +
-            '    cursor: pointer !important;\n' +
-            '    display: flex !important;\n' +
-            '    align-items: center !important;\n' +
-            '    justify-content: center !important;\n' +
-            '    border-radius: 4px !important;\n' +
-            '    transition: all 0.2s ease !important;\n' +
-            '    -webkit-tap-highlight-color: transparent !important;\n' +
-            '    z-index: 10 !important;\n' +
-            '    margin: 0 !important;\n' +
-            '}\n' +
-            '                \n' +
-            '.mobile-copy-btn:hover,\n' +
-            '.mobile-copy-btn:focus {\n' +
-            '    background: rgba(59, 130, 246, 0.2) !important;\n' +
-            '    color: #60a5fa !important;\n' +
-            '}\n' +
-            '                \n' +
-            '.mobile-copy-btn svg {\n' +
-            '    width: 16px !important;\n' +
-            '    height: 16px !important;\n' +
-            '    stroke: currentColor !important;\n' +
-            '    stroke-width: 2 !important;\n' +
-            '    fill: none !important;\n' +
-            '}\n' +
-            '                \n' +
-            'blockquote {\n' +
-            '    border-left: 3px solid #3b82f6 !important;\n' +
-            '    background: rgba(59, 130, 246, 0.1) !important;\n' +
-            '    color: #cbd5e1 !important;\n' +
-            '    padding: 8px 12px !important;\n' +
-            '    margin: 8px 0 !important;\n' +
-            '}\n' +
-            '\n' +
-            'table {\n' +
-            '    border-collapse: collapse !important;\n' +
-            '    width: 100% !important;\n' +
-            '    border: 1px solid #334155 !important;\n' +
-            '}\n' +
-            'th, td {\n' +
-            '    border: 1px solid #334155 !important;\n' +
-            '    padding: 8px !important;\n' +
-            '    color: #e2e8f0 !important;\n' +
-            '}\n' +
-            '\n' +
-            '::-webkit-scrollbar {\n' +
-            '    width: 0 !important;\n' +
-            '}\n' +
-            '                \n' +
-            '[style*="background-color: rgb(255, 255, 255)"],\n' +
-            '[style*="background-color: white"],\n' +
-            '[style*="background: white"] {\n' +
-            '    background-color: transparent !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* Fix Claude Code: Reset layout that breaks mobile scrolling */\n' +
-            '#chatContent > * {\n' +
-            '    position: relative !important;\n' +
-            '    height: auto !important;\n' +
-            '    min-height: 0 !important;\n' +
-            '    max-height: none !important;\n' +
-            '    overflow: visible !important;\n' +
-            '}\n' +
-            '#chatContent > * > * {\n' +
-            '    position: relative !important;\n' +
-            '    height: auto !important;\n' +
-            '    min-height: 0 !important;\n' +
-            '    max-height: none !important;\n' +
-            '    overflow: visible !important;\n' +
-            '}\n' +
-            '#chatContent [style*="position: fixed"],\n' +
-            '#chatContent [style*="position:fixed"] {\n' +
-            '    position: relative !important;\n' +
-            '}\n' +
-            '#chatContent [style*="height: 100vh"],\n' +
-            '#chatContent [style*="height:100vh"],\n' +
-            '#chatContent [style*="overflow: hidden"],\n' +
-            '#chatContent [style*="overflow:hidden"] {\n' +
-            '    height: auto !important;\n' +
-            '    overflow: visible !important;\n' +
-            '}';
-        styleTag.textContent = darkModeOverrides;
         chatContent.innerHTML = data.html;
 
 
@@ -1118,27 +1148,26 @@ modelBtn.addEventListener('click', () => {
 });
 
 // --- Viewport / Keyboard Handling ---
-// This fixes the issue where the keyboard hides the input or layout breaks
+// Use CSS 100dvh for layout instead of JS-driven height to prevent jumping.
+// Only scroll to bottom when keyboard opens (input focused).
 if (window.visualViewport) {
-    function handleResize() {
-        // Resize the body to match the visual viewport (screen minus keyboard)
-        document.body.style.height = window.visualViewport.height + 'px';
-
-        // Scroll to bottom if keyboard opened
-        if (document.activeElement === messageInput) {
-            setTimeout(scrollToBottom, 100);
-        }
-    }
-
-    window.visualViewport.addEventListener('resize', handleResize);
-    window.visualViewport.addEventListener('scroll', handleResize);
-    handleResize(); // Init
+    let vpResizeTimer = null;
+    window.visualViewport.addEventListener('resize', () => {
+        // Only scroll to bottom when keyboard opens — don't manipulate body height
+        // (100dvh in CSS handles the layout automatically)
+        clearTimeout(vpResizeTimer);
+        vpResizeTimer = setTimeout(() => {
+            if (document.activeElement === messageInput) {
+                scrollToBottom();
+            }
+        }, 80);
+    });
 } else {
-    // Fallback for older browsers without visualViewport support
+    // Fallback for very old browsers — not needed for Android/iOS modern browsers
     window.addEventListener('resize', () => {
         document.body.style.height = window.innerHeight + 'px';
     });
-    document.body.style.height = window.innerHeight + 'px'; // Init
+    document.body.style.height = window.innerHeight + 'px';
 }
 
 // --- Remote Click Logic (Thinking/Thought) ---
