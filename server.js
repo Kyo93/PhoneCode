@@ -27,8 +27,7 @@ const POLL_INTERVAL = 1000; // 1 second
 const SERVER_PORT = process.env.PORT || 3000;
 const APP_PASSWORD = process.env.APP_PASSWORD || 'antigravity';
 const AUTH_COOKIE_NAME = 'ag_auth_token';
-// Note: hashString is defined later, so we'll initialize the token inside createServer or use a simple string for now.
-let AUTH_TOKEN = 'ag_default_token';
+let AUTH_TOKEN = null;
 
 
 // Shared CDP connection
@@ -180,7 +179,7 @@ async function connectCDP(url) {
             } else if (data.method === 'Runtime.executionContextsCleared') {
                 contexts.length = 0;
             }
-        } catch (e) { }
+        } catch (e) { console.warn('[CDP] Context event parse error:', e.message); }
     });
 
     const call = (method, params) => new Promise((resolve, reject) => {
@@ -298,7 +297,7 @@ async function setMode(cdp, mode) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { console.debug('[CDP] Context eval failed, trying next:', e.message); }
     }
     return { error: 'Context failed' };
 }
@@ -332,7 +331,7 @@ async function stopGeneration(cdp) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { console.debug('[CDP] Context eval failed, trying next:', e.message); }
     }
     return { error: 'Context failed' };
 }
@@ -390,7 +389,7 @@ async function clickElement(cdp, { selector, index, textContent }) {
             });
             if (res.result?.value?.success) return res.result.value;
             // If we found it but click didn't return success (unlikely with this script), continue to next context
-        } catch (e) { }
+        } catch (e) { console.debug('[CDP] Context eval failed, trying next:', e.message); }
     }
     return { error: 'Click failed in all contexts or element not found at index' };
 }
@@ -443,7 +442,7 @@ async function remoteScroll(cdp, { scrollTop, scrollPercent }) {
                 contextId: ctx.id
             });
             if (res.result?.value?.success) return res.result.value;
-        } catch (e) { }
+        } catch (e) { console.debug('[CDP] Context eval failed, trying next:', e.message); }
     }
     return { error: 'Scroll failed in all contexts' };
 }
@@ -584,7 +583,7 @@ async function setModel(cdp, modelName) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { console.debug('[CDP] Context eval failed, trying next:', e.message); }
     }
     return { error: 'Context failed' };
 }
@@ -651,7 +650,7 @@ async function startNewChat(cdp) {
                 contextId: ctx.id
             });
             if (res.result?.value?.success) return res.result.value;
-        } catch (e) { }
+        } catch (e) { console.debug('[CDP] Context eval failed, trying next:', e.message); }
     }
     return { error: 'Context failed' };
 }
@@ -954,7 +953,7 @@ async function selectChat(cdp, chatTitle) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { console.debug('[CDP] Context eval failed, trying next:', e.message); }
     }
     return { error: 'Context failed' };
 }
@@ -980,7 +979,7 @@ async function closeHistory(cdp) {
                 contextId: ctx.id
             });
             if (res.result?.value?.success) return res.result.value;
-        } catch (e) { }
+        } catch (e) { console.debug('[CDP] Context eval failed, trying next:', e.message); }
     }
     return { error: 'Failed to close history panel' };
 }
@@ -1005,7 +1004,7 @@ async function hasChatOpen(cdp) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { console.debug('[CDP] Context eval failed, trying next:', e.message); }
     }
     return { hasChat: false, hasMessages: false, editorFound: false };
 }
@@ -1092,7 +1091,7 @@ async function getAppState(cdp) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { console.debug('[CDP] Context eval failed, trying next:', e.message); }
     }
     return { error: 'Context failed' };
 }
@@ -1266,14 +1265,22 @@ async function createServer() {
     const wss = new WebSocketServer({ server });
 
     // Initialize Auth Token using a unique salt from environment
-    const authSalt = process.env.AUTH_SALT || 'antigravity_default_salt_99';
+    const authSalt = process.env.AUTH_SALT;
+    if (!authSalt) {
+        console.error('❌ FATAL: AUTH_SALT environment variable is not set. Please configure .env file.');
+        process.exit(1);
+    }
     AUTH_TOKEN = hashString(APP_PASSWORD + authSalt);
 
     app.use(compression());
     app.use(express.json());
 
-    // Use a secure session secret from .env if available
-    const sessionSecret = process.env.SESSION_SECRET || 'antigravity_secret_key_1337';
+    // Use a secure session secret from .env
+    const sessionSecret = process.env.SESSION_SECRET;
+    if (!sessionSecret) {
+        console.error('❌ FATAL: SESSION_SECRET environment variable is not set. Please configure .env file.');
+        process.exit(1);
+    }
     app.use(cookieParser(sessionSecret));
 
     // Ngrok Bypass Middleware
@@ -1486,7 +1493,7 @@ async function createServer() {
                     if (el.shadowRoot) {
                         results = results.concat(Array.from(el.shadowRoot.querySelectorAll(selector)));
                     }
-                } catch (e) { }
+                } catch (e) { console.debug('[CDP] Context eval failed, trying next:', e.message); }
             }
             return results;
         }
@@ -1691,7 +1698,7 @@ async function createServer() {
         if (isLocalRequest(req)) {
             isAuthenticated = true;
         } else if (signedToken) {
-            const sessionSecret = process.env.SESSION_SECRET || 'antigravity_secret_key_1337';
+            const sessionSecret = process.env.SESSION_SECRET;
             const token = cookieParser.signedCookie(signedToken, sessionSecret);
             if (token === AUTH_TOKEN) {
                 isAuthenticated = true;
