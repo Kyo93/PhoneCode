@@ -822,7 +822,7 @@ stopBtn.addEventListener('click', async () => {
         } else {
             // alert('Error: ' + data.error);
         }
-    } catch (e) { console.warn('[STOP] Failed to stop generation:', e.message); }
+    } catch (e) { }
     setTimeout(() => stopBtn.style.opacity = '1', 500);
 });
 
