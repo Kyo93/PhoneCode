@@ -164,27 +164,10 @@ export async function injectMessage(cdp, text) {
 
         editor.focus();
 
-        // Select all existing content first so insertText replaces it
-        const sel = win.getSelection?.() || window.getSelection();
-        if (sel) {
-            const range = doc.createRange();
-            range.selectNodeContents(editor);
-            sel.removeAllRanges();
-            sel.addRange(range);
-        }
-
-        // Must use doc.execCommand (iframe doc), not document (outer doc)
         let inserted = false;
-        try { inserted = !!doc.execCommand('insertText', false, textToInsert); } catch {}
+        try { inserted = !!document.execCommand?.('insertText', false, textToInsert); } catch {}
         if (!inserted) {
-            // React-compatible fallback: use nativeInputValueSetter trick
-            const proto = Object.getOwnPropertyDescriptor(win.HTMLElement.prototype, 'textContent') ||
-                          Object.getOwnPropertyDescriptor(win.Node.prototype, 'textContent');
-            if (proto?.set) {
-                proto.set.call(editor, textToInsert);
-            } else {
-                editor.textContent = textToInsert;
-            }
+            editor.textContent = textToInsert;
             editor.dispatchEvent(new InputEvent('beforeinput', { bubbles:true, inputType:'insertText', data: textToInsert }));
             editor.dispatchEvent(new InputEvent('input', { bubbles:true, inputType:'insertText', data: textToInsert }));
         }
