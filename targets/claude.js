@@ -158,8 +158,7 @@ export async function injectMessage(cdp, text) {
         }
 
         const editor = doc.querySelector('[contenteditable="plaintext-only"], [contenteditable="true"], textarea');
-        const allEditors = [...document.querySelectorAll('[contenteditable]')].map(e => ({ tag: e.tagName, ce: e.getAttribute('contenteditable'), id: e.id, cls: e.className.substring(0,40) }));
-        if (!editor) return { ok:false, error:"editor_not_found", frameFound: !!frame, frameHasDoc: !!frame?.contentDocument, allEditors, url: location.href };
+        if (!editor) return { ok:false, error:"editor_not_found", frameFound: !!frame, url: location.href };
 
         const textToInsert = ${safeText};
 
@@ -177,7 +176,6 @@ export async function injectMessage(cdp, text) {
         // Must use doc.execCommand (iframe doc), not document (outer doc)
         let inserted = false;
         try { inserted = !!doc.execCommand('insertText', false, textToInsert); } catch {}
-        const editorContentAfter = editor.textContent?.substring(0, 50);
         if (!inserted) {
             // React-compatible fallback: use nativeInputValueSetter trick
             const proto = Object.getOwnPropertyDescriptor(win.HTMLElement.prototype, 'textContent') ||
@@ -212,7 +210,7 @@ export async function injectMessage(cdp, text) {
 
         if (submit && !submit.disabled) {
             submit.click();
-            return { ok:true, method:"click_submit", inserted, editorContentAfter };
+            return { ok:true, method:"click_submit" };
         }
 
         const enterEvt = { bubbles: true, cancelable: true, key: "Enter", code: "Enter", charCode: 13, keyCode: 13, which: 13 };
@@ -220,7 +218,7 @@ export async function injectMessage(cdp, text) {
         editor.dispatchEvent(new KeyboardEvent("keypress", enterEvt));
         editor.dispatchEvent(new KeyboardEvent("keyup", enterEvt));
 
-        return { ok:true, method:"enter_keypress", inserted, editorContentAfter, submitFound: !!submit };
+        return { ok:true, method:"enter_keypress" };
     })()`;
 
     // Try without contextId first (main/default context), then each known context
