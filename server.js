@@ -1049,15 +1049,21 @@ async function getAppState(cdp) {
         }
 
         // 2. Get Model
-        // Strategy: Look for leaf text nodes containing a known model keyword
+        // Strategy: Look for leaf text nodes containing a known model keyword,
+        // but EXCLUDE elements inside the chat/conversation container to avoid
+        // picking up model names mentioned in chat content.
         const KNOWN_MODELS = ["Gemini", "Claude", "GPT"];
-        const textNodes2 = allEls.filter(el => el.children.length === 0 && el.innerText);
-        
+        const chatRoot = document.getElementById('conversation') || document.getElementById('chat') || document.getElementById('cascade');
+        const textNodes2 = allEls.filter(el => {
+            if (el.children.length > 0 || !el.innerText) return false;
+            if (chatRoot && chatRoot.contains(el)) return false; // exclude chat content
+            return true;
+        });
+
         // First try: find inside a clickable parent (button, cursor:pointer)
         let modelEl = textNodes2.find(el => {
             const txt = el.innerText.trim();
-            if (!KNOWN_MODELS.some(k => txt.includes(k))) return false;
-            // Must be in a clickable context (header/toolbar, not chat content)
+            if (!KNOWN_MODELS.some(k => txt.includes(k)) || txt.length > 40) return false;
             let parent = el;
             for (let i = 0; i < 8; i++) {
                 if (!parent) break;
@@ -1066,12 +1072,12 @@ async function getAppState(cdp) {
             }
             return false;
         });
-        
-        // Fallback: any leaf node with a known model name
+
+        // Fallback: any leaf node with a known model name outside chat
         if (!modelEl) {
             modelEl = textNodes2.find(el => {
                 const txt = el.innerText.trim();
-                return KNOWN_MODELS.some(k => txt.includes(k)) && txt.length < 60;
+                return KNOWN_MODELS.some(k => txt.includes(k)) && txt.length < 40;
             });
         }
 
