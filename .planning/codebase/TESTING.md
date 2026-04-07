@@ -1,276 +1,172 @@
 # Testing Patterns
 
-**Analysis Date:** 2026-04-06
+**Analysis Date:** 2026-04-07
 
 ## Test Framework
 
-**Status:** No testing framework configured
+**Status: No automated test framework exists.**
 
-- No test runner installed: `jest`, `vitest`, `mocha` absent from `package.json`
-- No test files present in codebase: No `.test.js`, `.spec.js` files found
-- `package.json` dependencies do not include testing libraries
+- No test runner installed — `jest`, `vitest`, `mocha`, `tap`, `ava` are absent from `package.json`
+- No test files — no `*.test.js`, `*.spec.js`, or `__tests__/` directory anywhere in the project
+- No `test` script in `package.json`
+- No CI pipeline (`.github/workflows/` does not contain test steps — only `FUNDING.yml`)
+- No coverage tooling configured
 
-**Implications:**
-- Codebase relies on manual testing and runtime validation
-- No automated test suite exists to validate functionality
-- Quality assurance depends on developer verification and user testing
+```json
+// package.json scripts — no test entry
+"scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+}
+```
 
-## Manual Testing Patterns
+The project has no automated test suite. All verification is manual or runtime-embedded.
 
-**Integration Testing (Runtime):**
-The codebase validates itself through runtime checks during normal execution:
+## Manual Diagnostic Scripts
 
-1. **CDP Discovery Validation** (`server.js:114-156`):
-   ```javascript
-   // Tests multiple ports sequentially to find Antigravity
-   const list = await getJson(`http://127.0.0.1:${port}/json/list`);
-   
-   // Filters targets by characteristics
-   const workbench = list.find(t => t.url?.includes('workbench.html') || ...);
-   const claudeTargets = list.filter(t => t.url?.includes('extensionId=Anthropic.claude-code'));
-   ```
-   - Validates connection to 4 possible ports (9000-9003)
-   - Confirms CDP targets respond with expected structure
-   - Returns detailed error summary if discovery fails
+The project ships standalone scripts for manual inspection and debugging. These are not tests — they are operational investigation tools run on demand against a live system.
 
-2. **WebSocket Connection Validation** (`server.js:159-218`):
-   ```javascript
-   const ws = new WebSocket(url);
-   await new Promise((resolve, reject) => {
-       ws.on('open', resolve);
-       ws.on('error', reject);
-   });
-   ```
-   - Waits for successful connection before proceeding
-   - Rejects immediately on connection error
-   - Validates message parsing: `JSON.parse(msg)` inside try-catch
+**`discovery_claude.js`** — manually verifies CDP discovery of the Antigravity workbench:
+```bash
+node discovery_claude.js
+```
+Scans ports 9000–9003, connects to the workbench CDP target, runs JavaScript to list iframes and known VS Code sidebar IDs. Outputs JSON to console. Run when debugging connection issues.
 
-3. **Snapshot Capture Validation** (`server.js:221-430`):
-   - Injects test script into CDP context
-   - Returns error object if DOM selectors fail: `{ error: 'chat container not found', debug: {...} }`
-   - Validates Base64 image conversion: `if (imageUrl.startsWith('data:'))` check
-   - Ensures CSS parsing succeeds before sending to client
+**`find_claude_editor.js`** — verifies Claude Code CDP targets are reachable and have accessible editors:
+```bash
+node find_claude_editor.js
+```
+Connects to each Claude Code CDP target at port 9000, evaluates a script to find `contenteditable` and `textarea` elements. Outputs JSON. Used to confirm the `injectMessage` path will work.
 
-4. **Client-side Fetch Validation** (`public/js/app.js:39-55`):
-   ```javascript
-   async function fetchWithAuth(url, options = {}) {
-       const res = await fetch(url, options);
-       if (res.status === 401) {
-           console.log('[AUTH] Unauthorized, redirecting to login...');
-           window.location.href = '/login.html';
-       }
-       return res;
-   }
-   ```
-   - Checks response status codes
-   - Redirects on 401 (unauthorized)
-   - Returns 503 when snapshot unavailable, client handles gracefully
+**`inspect_claude_webview.js`** — inspects a specific hardcoded WebSocket URL:
+```bash
+node inspect_claude_webview.js
+```
+Contains a hardcoded CDP WebSocket URL — requires manual updating before use. Dumps all editable DOM elements from the webview. One-off diagnostic, not maintained as a reusable tool.
 
-## Error Checking Patterns
+**`generate_ssl.js`** — self-validating certificate generator:
+```bash
+node generate_ssl.js
+```
+Checks if certificates already exist before generating. Tries OpenSSL first, falls back to Node.js crypto. Prints method used and file paths on success. Run once during setup.
 
-**Defensive Error Handling:**
+## Runtime Verification Endpoints
 
-1. **Silent Failures with Fallback** (`discovery_claude.js:16-25`):
-   ```javascript
-   for (const port of PORTS) {
-       try {
-           const list = await getJson(`http://127.0.0.1:${port}/json/list`);
-           const target = list.find(t => t.url?.includes('workbench.html'));
-           if (target) return target.webSocketDebuggerUrl;
-       } catch (e) {}
-   }
-   return null; // Falls back to null if all ports fail
-   ```
+The running server exposes endpoints that serve as manual integration probes:
 
-2. **Nested Context Try-Catch** (`server.js:397-425`):
-   ```javascript
-   for (const ctx of cdp.contexts) {
-       try {
-           const result = await cdp.call("Runtime.evaluate", {
-               expression: CAPTURE_SCRIPT,
-               returnByValue: true,
-               contextId: ctx.id
-           });
-           if (result.result && result.result.value) {
-               return result.result.value;
-           }
-       } catch (e) { /* Continue to next context */ }
-   }
-   return 'Failed to inspect'; // Final fallback
-   ```
+**`GET /health`** — confirms server and CDP connection are alive:
+```json
+{
+    "status": "ok",
+    "cdpConnected": true,
+    "uptime": 42.3,
+    "timestamp": "2026-04-07T10:00:00.000Z",
+    "https": true
+}
+```
 
-3. **DOM Element Existence Checks** (`server.js:231-239`):
-   ```javascript
-   let cascade = document.getElementById('conversation') || 
-                document.getElementById('chat') || 
-                document.getElementById('cascade');
-   
-   if (!cascade) {
-       return { error: 'chat container not found', debug: { ... } };
-   }
-   ```
+**`GET /debug-ui`** — calls `inspectUI()` from `ui_inspector.js` and returns serialized DOM of the input container. Use to verify the correct DOM context is being found.
 
-## Test Data & Manual Verification
+**`GET /ui-inspect`** — exhaustive scan across all CDP contexts; returns button inventory, Lucide icon positions, and context metadata. Used to debug why UI actions fail.
 
-**Discovery Tests** - File: `discovery_claude.js`
-- Utility script for manual testing CDP discovery
-- Scans all 4 ports and returns available targets
-- Can be run manually: `node discovery_claude.js`
-- Outputs targets as JSON for inspection
+**`GET /cdp-targets`** — lists all raw CDP targets across all 4 ports. Use to confirm which Electron/VS Code windows are discoverable.
 
-**UI Inspection Tests** - Files: `ui_inspector.js`, `inspect_claude_webview.js`
-- Manual inspection utilities to examine DOM structure
-- `ui_inspector.js`: Serializes input container DOM
-- `inspect_claude_webview.js`: Investigates Claude Code extension targets
-- Can be called during runtime via server: `GET /debug-ui`, `GET /ui-inspect`
+**`GET /app-state`** — returns the currently detected mode and model from the desktop UI. Use to verify state-reading works after making changes to `getAppState`.
 
-**SSL Certificate Generation** - File: `generate_ssl.js`
-- Can be run independently: `node generate_ssl.js`
-- Self-validates by checking file existence before regenerating
-- Provides feedback on method used (OpenSSL vs Node.js crypto)
-- Includes startup instructions in console output
+**`GET /snapshot`** — returns the last captured snapshot JSON (`html`, `css`, `scrollInfo`, `stats`). Use to inspect what the phone is actually rendering.
 
-## Snapshot Validation
+## Embedded Validation Patterns
 
-**Server-side Snapshot Logic** (`server.js:1530-1560`):
+The codebase validates its own correctness at runtime through several patterns:
+
+**CDP context loop with structured error objects:**
+Every function that interacts with the browser via CDP returns either a structured success object or `{ error: 'message' }`. This makes failures visible at the HTTP layer:
 ```javascript
-// Calculate hash to detect changes
-const hash = hashString(html + css).substring(0, 36);
+// Caller in server.js route
+const result = await setMode(cdp, mode);
+res.json(result); // { success: true } or { error: '...' }
+```
+The phone client can display these errors; they surface integration failures without crashing.
 
+**Hash-based change detection** (`server.js: startPolling`):
+```javascript
+const hash = hashString(snapshot.html);
 if (hash !== lastSnapshotHash) {
-    lastSnapshot = { html, css, stats };
+    lastSnapshot = snapshot;
     lastSnapshotHash = hash;
-    // Broadcast update to all connected clients
-    broadcastSnapshot();
-} else {
-    // No change - don't broadcast (prevents unnecessary updates)
+    // broadcast
 }
 ```
+Acts as a content integrity check — only content that actually changed triggers a client update. Prevents spurious re-renders.
 
-**Validation checks:**
-- Hash comparison detects content changes
-- Only broadcasts updates when content actually changes
-- Stats calculation validates DOM structure: counts nodes, measures sizes
-- Validates HTTP status for error conditions
-
-**Client-side Rendering Validation** (`public/js/app.js:228-265`):
+**DOM element existence guards** inside CDP-injected scripts:
 ```javascript
-async function loadSnapshot() {
-    const response = await fetchWithAuth('/snapshot');
-    if (!response.ok) {
-        if (response.status === 503) {
-            chatIsOpen = false;
-            showEmptyState();
-            return;
-        }
-        throw new Error('Failed to load');
-    }
-    
-    chatIsOpen = true;
-    const data = await response.json();
-    // Validates data structure before rendering
+const cascade = document.getElementById('conversation') ||
+                document.getElementById('chat') ||
+                document.getElementById('cascade');
+if (!cascade) {
+    return { error: 'chat container not found', debug: { hasBody: !!body, availableIds: childIds } };
 }
 ```
+Returns debug info (available IDs) when the expected container is absent, making root cause identification faster.
 
-## Scroll Synchronization Tests
-
-**Lock Duration Tests** (`public/js/app.js:56-257`):
+**`exceptionDetails` inspection** for CDP evaluation failures:
 ```javascript
-const USER_SCROLL_LOCK_DURATION = 3000; // 3 second user lock
-let userScrollLockUntil = 0;
-
-// When user scrolls
-userScrollLockUntil = Date.now() + USER_SCROLL_LOCK_DURATION;
-
-// Check if locked
-const isUserScrollLocked = Date.now() < userScrollLockUntil;
-
-// Auto-scroll only allowed when not locked
-if (autoRefreshEnabled && !userIsScrolling && !isUserScrollLocked) {
-    // Allow scroll sync from Desktop
-}
+const result = await cdp.call("Runtime.evaluate", { expression, returnByValue: true, ... });
+if (result.exceptionDetails) continue; // skip this context
+if (result.result?.value) return result.result.value;
 ```
+Distinguishes between a JS exception inside the injected script and a null return value.
 
-**Scroll Position Calculation** (`public/js/app.js:252-256`):
-```javascript
-const scrollPos = chatContainer.scrollTop;
-const scrollHeight = chatContainer.scrollHeight;
-const clientHeight = chatContainer.clientHeight;
-const isNearBottom = scrollHeight - scrollPos - clientHeight < 120;
-```
-- Validates scroll state before updates
-- Determines if user is near bottom with 120px threshold
+## Test Types
 
-## Authentication Testing
+**Unit Tests:** Not used.
 
-**Server-side Auth Check** (`server.js:authMiddleware`):
-```javascript
-// Automatically exempts LAN IPs from auth
-const isLanIP = (ip) => ip === '127.0.0.1' || 
-                        ip.startsWith('192.168.') || 
-                        ip.startsWith('10.');
+**Integration Tests:** Not used as automated tests. Manual equivalents are the diagnostic scripts and HTTP endpoints listed above.
 
-if (isLanIP(req.ip)) {
-    // Allow without cookie check
-    return next();
-}
+**End-to-End Tests:** Not used. The equivalent is running the server, opening a chat in Antigravity or Claude Code, navigating to the phone UI, and manually verifying each feature works.
 
-// Remote access requires valid auth token
-const token = req.cookies?.[AUTH_COOKIE_NAME];
-if (!token || token !== AUTH_TOKEN) {
-    return res.status(401).json({ error: 'Unauthorized' });
-}
-```
+**Browser Tests (Playwright, Cypress, etc.):** Not used.
 
-**Client-side Auth Check** (`public/js/app.js:199-201`):
-```javascript
-if (data.type === 'error' && data.message === 'Unauthorized') {
-    window.location.href = '/login.html';
-    return;
-}
-```
+## Coverage
 
-## Known Testing Gaps
+**Requirements:** None enforced.
 
-**Untested Areas:**
-- `public/css/style.css` - Styling not validated by code tests
-- `launcher.py` - Python launcher process management untested
-- `generate_ssl.js` - Certificate validity not checked post-generation
-- Context menu installers (`.bat` and `.sh` scripts) - Shell scripts untested
-- Edge cases in DOM parsing for different Antigravity versions
-- Concurrent WebSocket client connections (only basic connection tested)
-- Rate limiting on API endpoints
+**Current state:** 0% automated coverage. No tooling configured to measure it.
 
-**Why no tests exist:**
-- Project started as prototype/utility rather than production codebase
-- Heavy runtime dependency on external systems (Antigravity, CDP, browser DOM)
-- Manual integration testing more practical than unit tests
-- No test CI/CD pipeline configured in repository
+## What to Test if Adding Tests
 
-## Validation Through Documentation
+If automated tests are introduced, the highest-value areas to cover first:
 
-**CODE_DOCUMENTATION.md** validates implementation:
-- Documents all 22 API endpoints and their expected behavior
-- Describes data flow from Antigravity → Server → Phone
-- Lists startup sequence requirements with order validation
-- Specifies timeout constants (30s CDP call, 3s scroll lock, 5s idle detection)
-- References security considerations and input sanitization
+**`targets/antigravity.js` and `targets/claude.js` — `discover(list)`:**
+Pure functions that filter a CDP `/json/list` array. Easily unit-tested with fixture data arrays. No external dependencies required.
 
-## Performance Validation
+**`server.js` — `hashString(str)`:**
+Pure function. Trivially testable. Used for change-detection integrity.
 
-**Runtime Metrics** (`public/js/app.js:260-264`):
-```javascript
-if (data.stats) {
-    const kbs = Math.round((data.stats.htmlSize + data.stats.cssSize) / 1024);
-    const nodes = data.stats.nodes;
-    const statsText = document.getElementById('statsText');
-    if (statsText) statsText.textContent = `${nodes} Nodes · ${kbs}KB`;
-}
-```
-- Tracks DOM node count
-- Measures HTML/CSS size in kilobytes
-- Displays metrics to verify snapshot efficiency
+**`server.js` — `isLocalRequest(req)`:**
+Pure function given a mock `req` object. Tests should cover all IP range prefixes: `127.0.0.1`, `::1`, `192.168.x.x`, `10.x.x.x`, `172.16–31.x.x`, and external IPs that must return false.
+
+**`server.js` — `getLocalIP()`:**
+Side-effectful (reads `os.networkInterfaces()`). Testable by mocking `os.networkInterfaces` return value.
+
+**`public/js/app.js` — `escapeHtml(text)`:**
+Pure DOM-based function. Testable in a jsdom environment. Critical to XSS safety in history rendering.
+
+**`public/js/app.js` — `addMobileCopyButtons()`:**
+DOM manipulation. Testable in jsdom. Should verify: skip if already present, single-line detection, copy button insertion.
+
+## Known Gaps
+
+There are no automated guards against:
+- Regression in `injectMessage` when target UIs update their DOM structure
+- `captureSnapshot` returning `null` when chat containers change IDs
+- Broken auth cookie validation after `SESSION_SECRET` changes
+- Concurrent WebSocket clients producing race conditions in `lastSnapshot`
+- `startNewChat` / `selectChat` failing silently when Antigravity's toolbar changes
+
+All of these currently rely on the developer running the app and observing behavior.
 
 ---
 
-*Testing analysis: 2026-04-06*
+*Testing analysis: 2026-04-07*
