@@ -180,7 +180,7 @@ async function connectCDP(url) {
             } else if (data.method === 'Runtime.executionContextsCleared') {
                 contexts.length = 0;
             }
-        } catch (e) { }
+        } catch (e) { console.error('[CDP] message parse error:', e.message); }
     });
 
     const call = (method, params) => new Promise((resolve, reject) => {
@@ -289,6 +289,7 @@ async function setMode(cdp, mode) {
         }
     })()`;
 
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -298,8 +299,9 @@ async function setMode(cdp, mode) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[setMode] all contexts failed:', lastErr.message || lastErr);
     return { error: 'Context failed' };
 }
 
@@ -323,6 +325,7 @@ async function stopGeneration(cdp) {
         return { error: 'No active generation found to stop' };
     })()`;
 
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -332,8 +335,9 @@ async function stopGeneration(cdp) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[stopGeneration] all contexts failed:', lastErr.message || lastErr);
     return { error: 'Context failed' };
 }
 
@@ -380,6 +384,7 @@ async function clickElement(cdp, { selector, index, textContent }) {
         }
     })()`;
 
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -390,8 +395,9 @@ async function clickElement(cdp, { selector, index, textContent }) {
             });
             if (res.result?.value?.success) return res.result.value;
             // If we found it but click didn't return success (unlikely with this script), continue to next context
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[clickElement] all contexts failed:', lastErr.message || lastErr);
     return { error: 'Click failed in all contexts or element not found at index' };
 }
 
@@ -434,6 +440,7 @@ async function remoteScroll(cdp, { scrollTop, scrollPercent }) {
         }
     })()`;
 
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -443,8 +450,9 @@ async function remoteScroll(cdp, { scrollTop, scrollPercent }) {
                 contextId: ctx.id
             });
             if (res.result?.value?.success) return res.result.value;
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[remoteScroll] all contexts failed:', lastErr.message || lastErr);
     return { error: 'Scroll failed in all contexts' };
 }
 
@@ -575,6 +583,7 @@ async function setModel(cdp, modelName) {
         }
     })()`;
 
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -584,8 +593,9 @@ async function setModel(cdp, modelName) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[setModel] all contexts failed:', lastErr.message || lastErr);
     return { error: 'Context failed' };
 }
 
@@ -642,6 +652,7 @@ async function startNewChat(cdp) {
         }
     })()`;
 
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -651,8 +662,9 @@ async function startNewChat(cdp) {
                 contextId: ctx.id
             });
             if (res.result?.value?.success) return res.result.value;
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[startNewChat] all contexts failed:', lastErr.message || lastErr);
     return { error: 'Context failed' };
 }
 // Get Chat History - Click history button and scrape conversations
@@ -945,6 +957,7 @@ async function selectChat(cdp, chatTitle) {
     }
 })()`;
 
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -954,8 +967,9 @@ async function selectChat(cdp, chatTitle) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[selectAntigravityChat] all contexts failed:', lastErr.message || lastErr);
     return { error: 'Context failed' };
 }
 
@@ -1035,6 +1049,7 @@ async function selectClaudeChat(cdp, chatTitle, sessionId) {
 })()`;
 
     let lastResult = null;
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -1045,8 +1060,9 @@ async function selectClaudeChat(cdp, chatTitle, sessionId) {
             });
             if (res.result?.value && !res.result.value.error) return res.result.value;
             if (res.result?.value) lastResult = res.result.value;
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[selectClaudeChat] all contexts failed:', lastErr.message || lastErr);
     return lastResult || { error: 'No valid context found for Claude Code' };
 }
 
@@ -1104,6 +1120,7 @@ async function getClaudeChatHistoryFromDOM(cdp) {
         }
     })()`;
 
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -1113,8 +1130,9 @@ async function getClaudeChatHistoryFromDOM(cdp) {
                 contextId: ctx.id
             });
             if (res.result?.value?.success) return res.result.value;
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[scrapeClaudeHistory] all contexts failed:', lastErr.message || lastErr);
     return { success: false, error: 'Failed to scrape Claude history from all contexts' };
 }
 
@@ -1130,6 +1148,7 @@ async function closeHistory(cdp) {
         }
     })()`;
 
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -1139,8 +1158,9 @@ async function closeHistory(cdp) {
                 contextId: ctx.id
             });
             if (res.result?.value?.success) return res.result.value;
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[closeHistory] all contexts failed:', lastErr.message || lastErr);
     return { error: 'Failed to close history panel' };
 }
 
@@ -1156,6 +1176,7 @@ async function hasChatOpen(cdp) {
     };
 })()`;
 
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -1164,8 +1185,9 @@ async function hasChatOpen(cdp) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[hasChatOpen] all contexts failed:', lastErr.message || lastErr);
     return { hasChat: false, hasMessages: false, editorFound: false };
 }
 
@@ -1248,6 +1270,7 @@ async function getAppState(cdp) {
     } catch (e) { return { error: e.toString() }; }
 })()`;
 
+    let lastErr;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", {
@@ -1257,8 +1280,9 @@ async function getAppState(cdp) {
                 contextId: ctx.id
             });
             if (res.result?.value) return res.result.value;
-        } catch (e) { }
+        } catch (e) { lastErr = e; }
     }
+    if (lastErr) console.error('[getAppState] all contexts failed:', lastErr.message || lastErr);
     return { error: 'Context failed' };
 }
 
@@ -1974,6 +1998,66 @@ async function main() {
             if (!cdp) return res.json({ editAuto: null });
             const state = await claude.getToolbarState(cdp);
             res.json(state);
+        });
+
+        // AskUserQuestion detection and interaction
+        app.get('/claude/question', async (req, res) => {
+            const cdp = cdpConnections.get('claude');
+            if (!cdp) return res.json({ detected: false });
+            const result = await claude.detectQuestion(cdp);
+            res.json(result);
+        });
+
+        app.post('/claude/question/select', async (req, res) => {
+            const { index } = req.body;
+            if (index === undefined) return res.status(400).json({ error: 'index required' });
+            const cdp = cdpConnections.get('claude');
+            if (!cdp) return res.status(503).json({ error: 'Claude CDP not connected' });
+            const result = await claude.selectOption(cdp, index);
+            res.json(result);
+        });
+
+        app.post('/claude/question/submit', async (req, res) => {
+            const cdp = cdpConnections.get('claude');
+            if (!cdp) return res.status(503).json({ error: 'Claude CDP not connected' });
+            const result = await claude.submitAnswer(cdp);
+            res.json(result);
+        });
+
+        // Set "Other" text input value
+        app.post('/claude/question/other-text', async (req, res) => {
+            const { text } = req.body;
+            if (text === undefined) return res.status(400).json({ error: 'text required' });
+            const cdp = cdpConnections.get('claude');
+            if (!cdp) return res.status(503).json({ error: 'Claude CDP not connected' });
+            const result = await claude.setOtherText(cdp, text);
+            res.json(result);
+        });
+
+        // Debug: dump DOM structure of AskUserQuestion
+        app.get('/claude/question/debug', async (req, res) => {
+            const cdp = cdpConnections.get('claude');
+            if (!cdp) return res.json({ error: 'no CDP' });
+            const result = await claude.debugQuestionDOM(cdp);
+            res.json(result);
+        });
+
+        // Cancel AskUserQuestion (send Escape)
+        app.post('/claude/question/cancel', async (req, res) => {
+            const cdp = cdpConnections.get('claude');
+            if (!cdp) return res.status(503).json({ error: 'Claude CDP not connected' });
+            const result = await claude.cancelQuestion(cdp);
+            res.json(result);
+        });
+
+        // Navigate between questions (prev/next/index)
+        app.post('/claude/question/navigate', async (req, res) => {
+            const { direction } = req.body;
+            if (!direction) return res.status(400).json({ error: 'direction required (next/prev/index)' });
+            const cdp = cdpConnections.get('claude');
+            if (!cdp) return res.status(503).json({ error: 'Claude CDP not connected' });
+            const result = await claude.navigateQuestion(cdp, direction);
+            res.json(result);
         });
 
         // Remote Click

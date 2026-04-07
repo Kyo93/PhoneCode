@@ -34,7 +34,9 @@ let idleTimer = null;
 let lastHash = '';
 let currentMode = 'Fast';
 let chatIsOpen = true; // Track if a chat is currently open
+let autoResumeAttempted = false; // Prevent auto-resume loop (selectChat triggers checkChatStatus)
 let lastDynamicCssHash = ''; // Track last injected dynamic CSS to skip unchanged updates
+let questionOverlayVisible = false; // AskUserQuestion overlay state
 
 // --- Static Dark Mode Overrides (injected once, never rebuilt) ---
 const STATIC_DARK_CSS = `
@@ -298,6 +300,7 @@ async function fetchTargets() {
         // If target switched and we are active, reload
         if (window.lastTarget && window.lastTarget !== data.current) {
              console.log('[TARGET] Target changed on server, reloading...');
+             autoResumeAttempted = false; // Reset so auto-resume fires for new target
              loadSnapshot();
         }
         window.lastTarget = data.current;
@@ -499,6 +502,13 @@ async function loadSnapshot() {
         } else {
             // Preserve exact scroll position
             chatContainer.scrollTop = scrollPos;
+        }
+
+        // Check for AskUserQuestion when target is Claude
+        if (window.lastTarget === 'claude') {
+            checkForQuestion();
+        } else if (questionOverlayVisible) {
+            hideQuestionOverlay();
         }
 
     } catch (err) {
@@ -812,6 +822,267 @@ function quickAction(text) {
     messageInput.focus();
 }
 
+// Trigger Claude Code toolbar actions (add-file, slash-command, toggle-edit-auto, bypass)
+async function triggerClaudeAction(action) {
+    try {
+        const res = await fetchWithAuth('/claude/action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action })
+        });
+        const data = await res.json();
+        if (!data.ok) console.warn('Claude action failed:', data);
+        setTimeout(loadSnapshot, 500);
+        setTimeout(loadSnapshot, 1500);
+    } catch (e) {
+        console.error('triggerClaudeAction error:', e);
+    }
+}
+
+// --- AskUserQuestion Detection & Overlay ---
+const questionOverlay = document.getElementById('questionOverlay');
+const questionPanel = document.getElementById('questionPanel');
+let questionCheckTimer = null;
+let questionCancelledAt = 0; // suppress re-detection after cancel
+
+async function checkForQuestion() {
+    // Don't re-show if user just cancelled (give Escape time to take effect)
+    if (Date.now() - questionCancelledAt < 5000) return;
+    try {
+        const res = await fetchWithAuth('/claude/question');
+        const data = await res.json();
+        if (data.detected && !questionOverlayVisible) {
+            showQuestionOverlay(data);
+        } else if (data.detected && questionOverlayVisible) {
+            // Check if the question changed (multi-question flow auto-advance)
+            const currentQ = currentQuestionData?.question || '';
+            const newQ = data.question || '';
+            if (newQ !== currentQ) {
+                // Question changed — rebuild overlay with new question
+                showQuestionOverlay(data);
+            } else {
+                updateQuestionSelections(data);
+            }
+        } else if (!data.detected && questionOverlayVisible) {
+            hideQuestionOverlay();
+        }
+    } catch (e) {
+        // Silent fail — question detection is best-effort
+    }
+}
+
+let currentQuestionData = null;
+
+function showQuestionOverlay(data) {
+    questionOverlayVisible = true;
+    currentQuestionData = data;
+
+    // Claude Code shows 1 question at a time; tabs indicate total steps
+    const tabs = data.tabs || [];
+    const activeTab = data.activeTab || 0;
+    const totalSteps = tabs.length || 1;
+    const currentStep = activeTab + 1;
+    const q = data; // current visible question data (top-level fields)
+
+    const multiSelect = q.multiSelect;
+    const checkIcon = multiSelect ? '&#10003;' : '&#9679;';
+
+    let html = `
+        <div class="question-header">`;
+
+    // Step indicator if multiple steps
+    if (totalSteps > 1) {
+        html += `<span class="question-step">${currentStep} / ${totalSteps}</span>`;
+    }
+
+    html += `<button class="question-close-btn" onclick="cancelQuestion()">&times;</button>
+        </div>`;
+
+    if (q.category) {
+        html += `<div class="question-category">${escapeHtml(q.category)}</div>`;
+    }
+    html += `<div class="question-text">${escapeHtml(q.question || '')}</div>`;
+    html += `<div class="question-options">`;
+
+    q.options.forEach((opt, i) => {
+        const sel = opt.selected ? ' selected' : '';
+        if (opt.isOther) {
+            html += `
+            <div class="question-option${sel}" data-index="${i}" onclick="toggleQuestionOption(${i})">
+                <div class="question-checkbox">${checkIcon}</div>
+                <div class="question-option-content">
+                    <div class="question-option-label">Other</div>
+                    <input class="question-other-input" placeholder="Type your answer..."
+                        value="${escapeHtml(opt.otherText || '')}"
+                        onclick="event.stopPropagation()"
+                        oninput="this.closest('.question-option').click()">
+                </div>
+            </div>`;
+        } else {
+            html += `
+            <div class="question-option${sel}" data-index="${i}" onclick="toggleQuestionOption(${i})">
+                <div class="question-checkbox">${checkIcon}</div>
+                <div class="question-option-content">
+                    <div class="question-option-label">${escapeHtml(opt.label)}</div>
+                    ${opt.description ? `<div class="question-option-desc">${escapeHtml(opt.description)}</div>` : ''}
+                </div>
+            </div>`;
+        }
+    });
+
+    html += `</div>`;
+
+    // Navigation + Submit row
+    const selectedCount = q.options.filter(o => o.selected).length;
+    if (totalSteps > 1) {
+        const prevDisabled = activeTab <= 0 ? ' disabled' : '';
+        const nextDisabled = activeTab >= totalSteps - 1 ? ' disabled' : '';
+        html += `
+        <div class="question-nav-row">
+            <button class="question-nav-btn" onclick="navigateQuestion('prev')"${prevDisabled}>&larr; Prev</button>
+            <button class="question-submit-btn" id="questionSubmitBtn" onclick="submitQuestionAnswer()"
+                ${selectedCount === 0 ? 'disabled' : ''}>${escapeHtml(q.submitText || 'Submit answers')}</button>
+            <button class="question-nav-btn" onclick="navigateQuestion('next')"${nextDisabled}>Next &rarr;</button>
+        </div>`;
+    } else {
+        html += `
+        <button class="question-submit-btn" id="questionSubmitBtn" onclick="submitQuestionAnswer()"
+            ${selectedCount === 0 ? 'disabled' : ''}>${escapeHtml(q.submitText || 'Submit answers')}</button>`;
+    }
+    html += `<div class="question-cancel-hint">Tap &times; to cancel</div>`;
+
+    questionPanel.innerHTML = html;
+    questionOverlay.classList.add('show');
+}
+
+function updateQuestionSelections(data) {
+    const optionEls = questionPanel.querySelectorAll('.question-option');
+    let selectedCount = 0;
+    data.options.forEach((opt, i) => {
+        if (optionEls[i]) {
+            optionEls[i].classList.toggle('selected', opt.selected);
+            if (opt.selected) selectedCount++;
+        }
+    });
+    const submitBtn = document.getElementById('questionSubmitBtn');
+    if (submitBtn) submitBtn.disabled = selectedCount === 0;
+}
+
+function hideQuestionOverlay() {
+    questionOverlayVisible = false;
+    currentQuestionData = null;
+    questionOverlay.classList.remove('show');
+    questionPanel.innerHTML = '';
+}
+
+async function toggleQuestionOption(index) {
+    const optionEls = questionPanel.querySelectorAll('.question-option');
+    const el = optionEls[index];
+    if (!el) return;
+
+    const isMulti = currentQuestionData?.multiSelect || false;
+    if (isMulti) {
+        el.classList.toggle('selected');
+    } else {
+        // Radio: deselect all others, select this one
+        optionEls.forEach(o => o.classList.remove('selected'));
+        el.classList.add('selected');
+    }
+
+    const selectedCount = questionPanel.querySelectorAll('.question-option.selected').length;
+    const submitBtn = document.getElementById('questionSubmitBtn');
+    if (submitBtn) submitBtn.disabled = selectedCount === 0;
+
+    try {
+        await fetchWithAuth('/claude/question/select', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ index })
+        });
+        setTimeout(loadSnapshot, 500);
+    } catch (e) {
+        console.error('toggleQuestionOption error:', e);
+    }
+}
+
+async function submitQuestionAnswer() {
+    const submitBtn = document.getElementById('questionSubmitBtn');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting...';
+    }
+    try {
+        // If "Other" is selected and has text, inject it into Claude Code first
+        const otherInput = questionPanel.querySelector('.question-option.selected .question-other-input');
+        if (otherInput && otherInput.value.trim()) {
+            await fetchWithAuth('/claude/question/other-text', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: otherInput.value.trim() })
+            });
+            // Small delay to let React process the input
+            await new Promise(r => setTimeout(r, 200));
+        }
+
+        await fetchWithAuth('/claude/question/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        hideQuestionOverlay();
+        setTimeout(loadSnapshot, 500);
+        setTimeout(loadSnapshot, 1500);
+        setTimeout(loadSnapshot, 3000);
+    } catch (e) {
+        console.error('submitQuestionAnswer error:', e);
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit answers';
+        }
+    }
+}
+
+async function cancelQuestion() {
+    questionCancelledAt = Date.now();
+    hideQuestionOverlay();
+    // Send Escape key to Claude Code to dismiss the question
+    try {
+        await fetchWithAuth('/claude/question/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        setTimeout(loadSnapshot, 500);
+    } catch (e) {}
+}
+
+async function navigateQuestion(direction) {
+    try {
+        await fetchWithAuth('/claude/question/navigate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ direction })
+        });
+        // Wait for Claude Code to switch tab, then refresh question data
+        setTimeout(async () => {
+            try {
+                const res = await fetchWithAuth('/claude/question');
+                const data = await res.json();
+                if (data.detected) {
+                    showQuestionOverlay(data);
+                }
+            } catch (e) {}
+            loadSnapshot();
+        }, 400);
+    } catch (e) {
+        console.error('navigateQuestion error:', e);
+    }
+}
+
+function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+}
+
 // --- Stop Logic ---
 stopBtn.addEventListener('click', async () => {
     stopBtn.style.opacity = '0.5';
@@ -1011,7 +1282,25 @@ async function checkChatStatus() {
         chatIsOpen = data.hasChat || data.editorFound;
 
         if (!chatIsOpen) {
+            // Auto-resume most recent chat for Claude Code (only once per empty-state encounter)
+            if (window.lastTarget === 'claude' && !autoResumeAttempted) {
+                autoResumeAttempted = true;
+                try {
+                    const histRes = await fetchWithAuth('/chat-history');
+                    const histData = await histRes.json();
+                    if (histData.chats && histData.chats.length > 0) {
+                        const mostRecent = histData.chats[0];
+                        console.log('[CHAT] Auto-resuming most recent conversation:', mostRecent.title);
+                        await selectChat(mostRecent.title, mostRecent.sessionId);
+                        return; // selectChat schedules its own loadSnapshot + checkChatStatus
+                    }
+                } catch (e) {
+                    console.error('[CHAT] Auto-resume failed:', e);
+                }
+            }
             showEmptyState();
+        } else {
+            autoResumeAttempted = false; // Reset when a chat is open
         }
     } catch (e) {
         console.error('Chat status check failed:', e);
@@ -1203,42 +1492,46 @@ chatContainer.addEventListener('click', async (e) => {
         return;
     }
 
-    // --- Command Action Buttons (Run / Reject) ---
+    // --- Remote Button Click (all buttons in snapshot) ---
+    // Forward any button click to desktop via remote-click.
+    // This handles: Run/Reject, AskUserQuestion options, permission dialogs, etc.
     const btn = e.target.closest('button');
     if (btn) {
         const btnText = (btn.innerText || '').trim();
-        // Match "Run", "Run Alt+⏎", "Reject"
-        const isRun = /^Run/i.test(btnText);
-        const isReject = /^Reject$/i.test(btnText);
+        if (!btnText) return; // skip icon-only buttons with no text
 
-        if (isRun || isReject) {
-            btn.style.opacity = '0.5';
-            setTimeout(() => btn.style.opacity = '1', 300);
+        // Skip buttons that are part of the mobile UI, not the snapshot
+        // (those are outside chatContainer, but just in case)
+        const ignorePatterns = /^(copy|copied)$/i;
+        if (ignorePatterns.test(btnText)) return;
 
-            // Determine which occurrence of this button text the user tapped
-            const label = isRun ? 'Run' : 'Reject';
-            const allButtons = Array.from(chatContainer.querySelectorAll('button'));
+        btn.style.opacity = '0.5';
+        setTimeout(() => btn.style.opacity = '1', 300);
 
-            // Filter to only those that match our specific label (to handle multiple commands)
-            const matchingButtons = allButtons.filter(b => (b.innerText || '').includes(label));
-            const btnIndex = matchingButtons.indexOf(btn);
+        // Use first line of button text as the match label
+        const label = btnText.split('\n')[0].trim();
+        const allButtons = Array.from(chatContainer.querySelectorAll('button'));
+        const matchingButtons = allButtons.filter(b => {
+            const t = (b.innerText || '').trim().split('\n')[0].trim();
+            return t === label;
+        });
+        const btnIndex = matchingButtons.indexOf(btn);
 
-            try {
-                await fetchWithAuth('/remote-click', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        selector: 'button',
-                        index: btnIndex >= 0 ? btnIndex : 0,
-                        textContent: label
-                    })
-                });
-                setTimeout(loadSnapshot, 500);
-                setTimeout(loadSnapshot, 1500);
-                setTimeout(loadSnapshot, 3000);
-            } catch (err) {
-                console.error('Remote command click failed:', err);
-            }
+        try {
+            await fetchWithAuth('/remote-click', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    selector: 'button',
+                    index: btnIndex >= 0 ? btnIndex : 0,
+                    textContent: label
+                })
+            });
+            setTimeout(loadSnapshot, 500);
+            setTimeout(loadSnapshot, 1500);
+            setTimeout(loadSnapshot, 3000);
+        } catch (err) {
+            console.error('Remote button click failed:', err);
         }
     }
 });

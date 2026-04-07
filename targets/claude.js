@@ -367,3 +367,404 @@ export async function hasChatOpen(cdp) {
     }
     return { hasChat: false, hasMessages: false, editorFound: false };
 }
+
+// Detect AskUserQuestion UI and extract structured data
+// Supports multiple questions (1-4) with tab navigation
+export async function detectQuestion(cdp) {
+    const EXPRESSION = `(() => {
+        try {
+            // Find "Submit answers" button as anchor point
+            const allBtns = Array.from(document.querySelectorAll('button'));
+            const submitBtn = allBtns.find(b => {
+                if (!b.offsetParent) return false;
+                const txt = (b.textContent || '').trim().toLowerCase();
+                return /submit\\s+answer/i.test(txt);
+            });
+            if (!submitBtn) return { detected: false };
+
+            // Walk up to find the permission request container
+            let container = submitBtn;
+            for (let i = 0; i < 10; i++) {
+                container = container.parentElement;
+                if (!container) return { detected: false };
+                const hasOptions = container.querySelectorAll('[role="radio"], [role="checkbox"]').length > 0;
+                if (hasOptions) break;
+            }
+            if (!container) return { detected: false };
+
+            // Detect navigation tabs (multiple questions)
+            const navTabs = Array.from(container.querySelectorAll('[class*="navTab_"]'));
+            const tabLabels = navTabs.map(tab => {
+                const labelEl = tab.querySelector('[class*="navTabLabel"]');
+                return {
+                    label: labelEl ? (labelEl.textContent || '').trim() : (tab.textContent || '').trim(),
+                    active: tab.className.includes('navTabActive')
+                };
+            });
+            const activeTabIndex = tabLabels.findIndex(t => t.active);
+
+            // Extract all question blocks
+            const questionBlocks = Array.from(container.querySelectorAll('[class*="questionBlock"]'));
+            const questions = [];
+
+            questionBlocks.forEach((block, qi) => {
+                const questionEl = block.querySelector('[class*="questionTextLarge"]');
+                const questionText = questionEl ? (questionEl.textContent || '').trim() : '';
+
+                // Category from question header
+                const headerEl = block.querySelector('[class*="questionHeader"] [class*="questionCategory"], [class*="questionHeader"] span:first-child');
+                let category = '';
+                if (headerEl && headerEl !== questionEl) {
+                    const catText = (headerEl.textContent || '').trim();
+                    if (catText && catText !== questionText && catText.length < 40) {
+                        category = catText;
+                    }
+                }
+
+                // Find options within this block
+                const optionEls = Array.from(block.querySelectorAll('[role="radio"], [role="checkbox"]'));
+                const multiSelect = optionEls.length > 0 && optionEls[0].getAttribute('role') === 'checkbox';
+
+                const options = optionEls.map((el, i) => {
+                    const selected = el.getAttribute('aria-checked') === 'true';
+                    const labelEl = el.querySelector('[class*="optionLabel"]');
+                    const descEl = el.querySelector('[class*="optionDescription"]');
+                    const label = labelEl ? (labelEl.textContent || '').trim() : (el.textContent || '').trim();
+                    const isOther = label.toLowerCase() === 'other';
+                    const description = descEl ? (descEl.textContent || '').trim() : '';
+                    // Other text = full textContent minus the label "Other"
+                    const otherText = isOther ? (el.textContent || '').replace(/^\\s*Other\\s*/, '').trim() : undefined;
+
+                    return { index: i, label, description, isOther, selected, otherText };
+                });
+
+                questions.push({ category, question: questionText, options, multiSelect });
+            });
+
+            // Fallback: if no questionBlock found, extract from container directly
+            if (questions.length === 0) {
+                const questionEl = container.querySelector('[class*="questionTextLarge"]');
+                const questionText = questionEl ? (questionEl.textContent || '').trim() : '';
+                const optionEls = Array.from(container.querySelectorAll('[role="radio"], [role="checkbox"]'));
+                const multiSelect = optionEls.length > 0 && optionEls[0].getAttribute('role') === 'checkbox';
+                const options = optionEls.map((el, i) => {
+                    const selected = el.getAttribute('aria-checked') === 'true';
+                    const labelEl = el.querySelector('[class*="optionLabel"]');
+                    const descEl = el.querySelector('[class*="optionDescription"]');
+                    const label = labelEl ? (labelEl.textContent || '').trim() : (el.textContent || '').trim();
+                    const isOther = label.toLowerCase() === 'other';
+                    const description = descEl ? (descEl.textContent || '').trim() : '';
+                    const otherText = isOther ? (el.textContent || '').replace(/^\\s*Other\\s*/, '').trim() : undefined;
+                    return { index: i, label, description, isOther, selected, otherText };
+                });
+                questions.push({ category: '', question: questionText, options, multiSelect });
+            }
+
+            const submitText = (submitBtn.textContent || '').trim();
+
+            // Backward compat: also expose first question's fields at top level
+            return {
+                detected: true,
+                category: questions[0]?.category || '',
+                question: questions[0]?.question || '',
+                options: questions[0]?.options || [],
+                multiSelect: questions[0]?.multiSelect || false,
+                submitText,
+                questions,
+                tabs: tabLabels,
+                activeTab: activeTabIndex >= 0 ? activeTabIndex : 0
+            };
+        } catch (e) {
+            return { detected: false, error: e.toString() };
+        }
+    })()`;
+
+    const attempts = [null, ...cdp.contexts.map(c => c.id)];
+    for (const contextId of attempts) {
+        try {
+            const params = { expression: EXPRESSION, returnByValue: true, awaitPromise: false };
+            if (contextId) params.contextId = contextId;
+            const result = await cdp.call("Runtime.evaluate", params);
+            if (result.result?.value?.detected) return result.result.value;
+        } catch (e) { }
+    }
+    return { detected: false };
+}
+
+// Click an option in AskUserQuestion by index
+export async function selectOption(cdp, optionIndex) {
+    const safeIndex = parseInt(optionIndex, 10);
+    const EXPRESSION = `(() => {
+        try {
+            // Find submit button and walk up to container
+            const allBtns = Array.from(document.querySelectorAll('button'));
+            const submitBtn = allBtns.find(b => b.offsetParent && /submit\\s+answer/i.test((b.textContent || '').trim()));
+            if (!submitBtn) return { ok: false, error: 'no submit button' };
+
+            let container = submitBtn;
+            for (let i = 0; i < 10; i++) {
+                container = container.parentElement;
+                if (!container) return { ok: false, error: 'no container' };
+                if (container.querySelectorAll('[role="radio"], [role="checkbox"]').length > 0) break;
+            }
+
+            const optionEls = Array.from(container.querySelectorAll('[role="radio"], [role="checkbox"]'));
+            const target = optionEls[${safeIndex}];
+            if (!target) return { ok: false, error: 'option not found at index ${safeIndex}', total: optionEls.length };
+
+            // Click the option div to trigger React handler
+            target.click();
+
+            // Read back all states
+            const selections = optionEls.map((el, i) => ({
+                index: i,
+                selected: el.getAttribute('aria-checked') === 'true'
+            }));
+            return { ok: true, selections };
+        } catch (e) {
+            return { ok: false, error: e.toString() };
+        }
+    })()`;
+
+    const attempts = [null, ...cdp.contexts.map(c => c.id)];
+    for (const contextId of attempts) {
+        try {
+            const params = { expression: EXPRESSION, returnByValue: true, awaitPromise: false };
+            if (contextId) params.contextId = contextId;
+            const result = await cdp.call("Runtime.evaluate", params);
+            if (result.result?.value?.ok) return result.result.value;
+        } catch (e) { }
+    }
+    return { ok: false, error: 'no context' };
+}
+
+// Debug: dump DOM structure around the AskUserQuestion UI
+export async function debugQuestionDOM(cdp) {
+    const EXPRESSION = `(() => {
+        try {
+            const allBtns = Array.from(document.querySelectorAll('button'));
+            const submitBtn = allBtns.find(b => {
+                if (!b.offsetParent) return false;
+                const txt = (b.textContent || '').trim().toLowerCase();
+                return /submit\\s+answer/i.test(txt);
+            });
+            if (!submitBtn) return { found: false, reason: 'no submit button' };
+
+            let container = submitBtn;
+            let walkSteps = 0;
+            for (let i = 0; i < 15; i++) {
+                container = container.parentElement;
+                walkSteps++;
+                if (!container) break;
+                if (container.children.length >= 3) break;
+            }
+            if (!container) return { found: false, reason: 'no container' };
+
+            function dumpNode(el, depth) {
+                if (depth > 8) return '';
+                const tag = el.tagName?.toLowerCase() || '?';
+                const attrs = [];
+                if (el.type) attrs.push('type=' + el.type);
+                if (el.getAttribute && el.getAttribute('role')) attrs.push('role=' + el.getAttribute('role'));
+                if (el.getAttribute && el.getAttribute('aria-checked') !== null) attrs.push('aria-checked=' + el.getAttribute('aria-checked'));
+                if (el.getAttribute && el.getAttribute('aria-selected') !== null) attrs.push('aria-selected=' + el.getAttribute('aria-selected'));
+                if (el.getAttribute && el.getAttribute('data-state')) attrs.push('data-state=' + el.getAttribute('data-state'));
+                if (el.className && typeof el.className === 'string') attrs.push('class=' + el.className.slice(0, 80));
+                let ownTxt = '';
+                for (const node of el.childNodes) {
+                    if (node.nodeType === 3) ownTxt += node.textContent;
+                }
+                ownTxt = ownTxt.trim().slice(0, 80);
+                const attrStr = attrs.length ? ' [' + attrs.join(', ') + ']' : '';
+                const textStr = ownTxt ? ' "' + ownTxt + '"' : '';
+                const indent = '  '.repeat(depth);
+                let result = indent + '<' + tag + '>' + attrStr + textStr + '\\n';
+                for (const child of el.children) {
+                    result += dumpNode(child, depth + 1);
+                }
+                return result;
+            }
+
+            const dump = dumpNode(container, 0);
+            const inputs = Array.from(container.querySelectorAll('input'));
+            const inputInfo = inputs.map(i => ({ type: i.type, checked: i.checked, visible: !!i.offsetParent }));
+            const roleCheckboxes = Array.from(container.querySelectorAll('[role="checkbox"], [role="radio"], [role="option"], [role="menuitemcheckbox"]'));
+            const roleInfo = roleCheckboxes.map(el => ({
+                tag: el.tagName?.toLowerCase(),
+                role: el.getAttribute('role'),
+                ariaChecked: el.getAttribute('aria-checked'),
+                text: (el.textContent || '').trim().slice(0, 60)
+            }));
+            const dataStateEls = Array.from(container.querySelectorAll('[data-state]'));
+            const dataStateInfo = dataStateEls.map(el => ({
+                tag: el.tagName?.toLowerCase(),
+                dataState: el.getAttribute('data-state'),
+                role: el.getAttribute('role'),
+                text: (el.textContent || '').trim().slice(0, 40)
+            }));
+
+            return { found: true, walkSteps, domDump: dump, inputs: inputInfo, roleCheckboxes: roleInfo, dataStateElements: dataStateInfo };
+        } catch (e) {
+            return { found: false, error: e.toString() };
+        }
+    })()`;
+
+    const attempts = [null, ...cdp.contexts.map(c => c.id)];
+    for (const contextId of attempts) {
+        try {
+            const params = { expression: EXPRESSION, returnByValue: true, awaitPromise: false };
+            if (contextId) params.contextId = contextId;
+            const result = await cdp.call("Runtime.evaluate", params);
+            if (result.result?.value?.found) return result.result.value;
+        } catch (e) { }
+    }
+    return { found: false, error: 'no context' };
+}
+
+// Navigate between questions by clicking nav tabs
+// direction: 'next', 'prev', or a tab index number
+export async function navigateQuestion(cdp, direction) {
+    const safeDir = JSON.stringify(direction);
+    const EXPRESSION = `(() => {
+        try {
+            const tabs = Array.from(document.querySelectorAll('[class*="navTab_"]'));
+            if (tabs.length === 0) return { ok: false, error: 'no nav tabs found' };
+
+            const activeIdx = tabs.findIndex(t => t.className.includes('navTabActive'));
+            const dir = ${safeDir};
+            let targetIdx;
+
+            if (dir === 'next') {
+                targetIdx = Math.min(activeIdx + 1, tabs.length - 1);
+            } else if (dir === 'prev') {
+                targetIdx = Math.max(activeIdx - 1, 0);
+            } else {
+                targetIdx = parseInt(dir, 10);
+            }
+
+            if (targetIdx < 0 || targetIdx >= tabs.length) return { ok: false, error: 'index out of range' };
+            if (targetIdx === activeIdx) return { ok: true, same: true, current: activeIdx, total: tabs.length };
+
+            tabs[targetIdx].click();
+            return { ok: true, from: activeIdx, to: targetIdx, total: tabs.length };
+        } catch (e) {
+            return { ok: false, error: e.toString() };
+        }
+    })()`;
+
+    const attempts = [null, ...cdp.contexts.map(c => c.id)];
+    for (const contextId of attempts) {
+        try {
+            const params = { expression: EXPRESSION, returnByValue: true, awaitPromise: false };
+            if (contextId) params.contextId = contextId;
+            const result = await cdp.call("Runtime.evaluate", params);
+            if (result.result?.value?.ok) return result.result.value;
+        } catch (e) { }
+    }
+    return { ok: false, error: 'no context' };
+}
+
+// Set "Other" text in Claude Code's AskUserQuestion
+// Strategy: find Other's text div → focus → select all → type via CDP
+export async function setOtherText(cdp, text) {
+    // Step 1: Focus the Other text area
+    const FOCUS = `(() => {
+        try {
+            const submitBtn = Array.from(document.querySelectorAll('button'))
+                .find(b => b.offsetParent && /submit\\s+answer/i.test(b.textContent || ''));
+            if (!submitBtn) return { ok: false, error: 'no submit btn' };
+            let c = submitBtn;
+            for (let i = 0; i < 10 && c; i++) { c = c.parentElement; if (c?.querySelectorAll('[role="radio"],[role="checkbox"]').length) break; }
+            if (!c) return { ok: false, error: 'no container' };
+
+            // Find Other option and ensure selected
+            const opts = Array.from(c.querySelectorAll('[role="radio"],[role="checkbox"]'));
+            const other = opts.find(el => (el.querySelector('[class*="optionLabel"]')?.textContent || '').trim().toLowerCase() === 'other');
+            if (!other) return { ok: false, error: 'no Other option' };
+            if (other.getAttribute('aria-checked') !== 'true') other.click();
+
+            // Find text div: second child of optionContent (first is optionLabel)
+            const content = other.querySelector('[class*="optionContent"]');
+            if (!content || content.children.length < 2) return { ok: false, error: 'no text div' };
+            const textDiv = content.children[1];
+
+            // Focus and select all content
+            textDiv.focus();
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(textDiv);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            return { ok: true };
+        } catch (e) { return { ok: false, error: e.toString() }; }
+    })()`;
+
+    let focused = false;
+    for (const contextId of [null, ...cdp.contexts.map(c => c.id)]) {
+        try {
+            const r = await cdp.call("Runtime.evaluate", { expression: FOCUS, returnByValue: true, awaitPromise: false, ...(contextId && { contextId }) });
+            if (r.result?.value?.ok) { focused = true; break; }
+        } catch (e) { }
+    }
+    if (!focused) return { ok: false, error: 'could not focus Other text' };
+
+    // Step 2: Delete selected text + type new text via CDP
+    try {
+        await cdp.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 });
+        await cdp.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 });
+        await cdp.call("Input.insertText", { text });
+        return { ok: true };
+    } catch (e) {
+        return { ok: false, error: e.toString() };
+    }
+}
+
+// Click the "Submit answers" button
+export async function submitAnswer(cdp) {
+    const EXPRESSION = `(() => {
+        try {
+            const allBtns = Array.from(document.querySelectorAll('button'));
+            const submitBtn = allBtns.find(b => b.offsetParent && /submit\\s+answer/i.test((b.textContent || '').trim()));
+            if (!submitBtn) return { ok: false, error: 'submit button not found' };
+            submitBtn.click();
+            return { ok: true };
+        } catch (e) {
+            return { ok: false, error: e.toString() };
+        }
+    })()`;
+
+    const attempts = [null, ...cdp.contexts.map(c => c.id)];
+    for (const contextId of attempts) {
+        try {
+            const params = { expression: EXPRESSION, returnByValue: true, awaitPromise: false };
+            if (contextId) params.contextId = contextId;
+            const result = await cdp.call("Runtime.evaluate", params);
+            if (result.result?.value?.ok) return result.result.value;
+        } catch (e) { }
+    }
+    return { ok: false, error: 'no context submitAnswer' };
+}
+
+// Cancel AskUserQuestion by pressing Escape via CDP Input API
+export async function cancelQuestion(cdp) {
+    try {
+        // Use CDP Input.dispatchKeyEvent — works at browser level, not DOM level
+        await cdp.call("Input.dispatchKeyEvent", {
+            type: "keyDown",
+            key: "Escape",
+            code: "Escape",
+            windowsVirtualKeyCode: 27,
+            nativeVirtualKeyCode: 27
+        });
+        await cdp.call("Input.dispatchKeyEvent", {
+            type: "keyUp",
+            key: "Escape",
+            code: "Escape",
+            windowsVirtualKeyCode: 27,
+            nativeVirtualKeyCode: 27
+        });
+        return { ok: true };
+    } catch (e) {
+        return { ok: false, error: e.toString() };
+    }
+}
