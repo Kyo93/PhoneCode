@@ -1296,13 +1296,13 @@ async function createServer() {
         }
 
         // Magic Link / QR Code Auto-Login
-        if (req.query.key === APP_PASSWORD) {
+        if (req.query.token === AUTH_TOKEN) {
             res.cookie(AUTH_COOKIE_NAME, AUTH_TOKEN, {
                 httpOnly: true,
                 signed: true,
                 maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
             });
-            // Remove the key from the URL by redirecting to the base path
+            // Remove the token from the URL by redirecting to the base path
             return res.redirect('/');
         }
 
@@ -1340,6 +1340,14 @@ async function createServer() {
     app.post('/logout', (req, res) => {
         res.clearCookie(AUTH_COOKIE_NAME);
         res.json({ success: true });
+    });
+
+    // Check Chat Status endpoint
+    app.get('/chat-status', async (req, res) => {
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp) return res.json({ hasChat: false, hasMessages: false, editorFound: false, error: 'CDP disconnected' });
+        const result = await hasChatOpen(cdp);
+        res.json(result);
     });
 
     // Get current snapshot
@@ -1852,11 +1860,13 @@ async function main() {
                                         const textPart = Array.isArray(parts)
                                             ? parts.find(p => p.type === 'text')?.text
                                             : (typeof parts === 'string' ? parts : null);
-                                        const t = textPart.trim();
-                                        // Skip system-injected context tags
-                                        if (t.length > 2 && !t.startsWith('<ide_') && !t.startsWith('<local-command') && !t.startsWith('<system') && !t.startsWith('<user-prompt') && !t.startsWith('<command-')) {
-                                            title = t.substring(0, 80);
-                                            break;
+                                        if (textPart) {
+                                            const t = textPart.trim();
+                                            // Skip system-injected context tags
+                                            if (t.length > 2 && !t.startsWith('<ide_') && !t.startsWith('<local-command') && !t.startsWith('<system') && !t.startsWith('<user-prompt') && !t.startsWith('<command-')) {
+                                                title = t.substring(0, 80);
+                                                break;
+                                            }
                                         }
                                     }
                                 } catch {}
@@ -1907,7 +1917,7 @@ async function main() {
         
         server.listen(SERVER_PORT, '0.0.0.0', () => {
             console.log(`\n🚀 [PHONE-CHAT] Server running at ${protocol}://localhost:${SERVER_PORT}`);
-            console.log(`🔐 App Password: ${APP_PASSWORD}`);
+            console.log(`🔐 App Password: [HIDDEN FOR SECURITY]`);
             console.log(`📱 Direct link (same Wi-Fi): ${protocol}://${localIP}:${SERVER_PORT}`);
             console.log(`🌐 Public tunnel (ngrok): Use your ngrok URL\n`);
         });
