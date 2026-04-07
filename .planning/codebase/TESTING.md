@@ -4,169 +4,225 @@
 
 ## Test Framework
 
-**Status: No automated test framework exists.**
+**Runner:**
+- Not detected - no testing framework configured
+- No test config files: no `jest.config.js`, `vitest.config.js`, `karma.conf.js`
+- No testing dependencies in `package.json` (only: compression, cookie-parser, dotenv, express, ws)
 
-- No test runner installed — `jest`, `vitest`, `mocha`, `tap`, `ava` are absent from `package.json`
-- No test files — no `*.test.js`, `*.spec.js`, or `__tests__/` directory anywhere in the project
-- No `test` script in `package.json`
-- No CI pipeline (`.github/workflows/` does not contain test steps — only `FUNDING.yml`)
-- No coverage tooling configured
+**Assertion Library:**
+- Not detected - no test assertions present
 
-```json
-// package.json scripts — no test entry
-"scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
-}
-```
+**Run Commands:**
+- No test commands defined in `package.json` scripts
+- Current scripts: `"start": "node server.js"`, `"dev": "node server.js"`
 
-The project has no automated test suite. All verification is manual or runtime-embedded.
+## Test File Organization
 
-## Manual Diagnostic Scripts
+**Location:**
+- No test files found in codebase
+- Searched pattern: `*.test.js`, `*.spec.js`, `*.test.ts`, `*.spec.ts` returned 0 results
+- No separate `test/` or `__tests__/` directories
 
-The project ships standalone scripts for manual inspection and debugging. These are not tests — they are operational investigation tools run on demand against a live system.
+**Naming:**
+- Not applicable - no tests present
 
-**`discovery_claude.js`** — manually verifies CDP discovery of the Antigravity workbench:
-```bash
-node discovery_claude.js
-```
-Scans ports 9000–9003, connects to the workbench CDP target, runs JavaScript to list iframes and known VS Code sidebar IDs. Outputs JSON to console. Run when debugging connection issues.
+**Structure:**
+- Not applicable - no tests present
 
-**`find_claude_editor.js`** — verifies Claude Code CDP targets are reachable and have accessible editors:
-```bash
-node find_claude_editor.js
-```
-Connects to each Claude Code CDP target at port 9000, evaluates a script to find `contenteditable` and `textarea` elements. Outputs JSON. Used to confirm the `injectMessage` path will work.
+## Test Coverage
 
-**`inspect_claude_webview.js`** — inspects a specific hardcoded WebSocket URL:
-```bash
-node inspect_claude_webview.js
-```
-Contains a hardcoded CDP WebSocket URL — requires manual updating before use. Dumps all editable DOM elements from the webview. One-off diagnostic, not maintained as a reusable tool.
-
-**`generate_ssl.js`** — self-validating certificate generator:
-```bash
-node generate_ssl.js
-```
-Checks if certificates already exist before generating. Tries OpenSSL first, falls back to Node.js crypto. Prints method used and file paths on success. Run once during setup.
-
-## Runtime Verification Endpoints
-
-The running server exposes endpoints that serve as manual integration probes:
-
-**`GET /health`** — confirms server and CDP connection are alive:
-```json
-{
-    "status": "ok",
-    "cdpConnected": true,
-    "uptime": 42.3,
-    "timestamp": "2026-04-07T10:00:00.000Z",
-    "https": true
-}
-```
-
-**`GET /debug-ui`** — calls `inspectUI()` from `ui_inspector.js` and returns serialized DOM of the input container. Use to verify the correct DOM context is being found.
-
-**`GET /ui-inspect`** — exhaustive scan across all CDP contexts; returns button inventory, Lucide icon positions, and context metadata. Used to debug why UI actions fail.
-
-**`GET /cdp-targets`** — lists all raw CDP targets across all 4 ports. Use to confirm which Electron/VS Code windows are discoverable.
-
-**`GET /app-state`** — returns the currently detected mode and model from the desktop UI. Use to verify state-reading works after making changes to `getAppState`.
-
-**`GET /snapshot`** — returns the last captured snapshot JSON (`html`, `css`, `scrollInfo`, `stats`). Use to inspect what the phone is actually rendering.
-
-## Embedded Validation Patterns
-
-The codebase validates its own correctness at runtime through several patterns:
-
-**CDP context loop with structured error objects:**
-Every function that interacts with the browser via CDP returns either a structured success object or `{ error: 'message' }`. This makes failures visible at the HTTP layer:
-```javascript
-// Caller in server.js route
-const result = await setMode(cdp, mode);
-res.json(result); // { success: true } or { error: '...' }
-```
-The phone client can display these errors; they surface integration failures without crashing.
-
-**Hash-based change detection** (`server.js: startPolling`):
-```javascript
-const hash = hashString(snapshot.html);
-if (hash !== lastSnapshotHash) {
-    lastSnapshot = snapshot;
-    lastSnapshotHash = hash;
-    // broadcast
-}
-```
-Acts as a content integrity check — only content that actually changed triggers a client update. Prevents spurious re-renders.
-
-**DOM element existence guards** inside CDP-injected scripts:
-```javascript
-const cascade = document.getElementById('conversation') ||
-                document.getElementById('chat') ||
-                document.getElementById('cascade');
-if (!cascade) {
-    return { error: 'chat container not found', debug: { hasBody: !!body, availableIds: childIds } };
-}
-```
-Returns debug info (available IDs) when the expected container is absent, making root cause identification faster.
-
-**`exceptionDetails` inspection** for CDP evaluation failures:
-```javascript
-const result = await cdp.call("Runtime.evaluate", { expression, returnByValue: true, ... });
-if (result.exceptionDetails) continue; // skip this context
-if (result.result?.value) return result.result.value;
-```
-Distinguishes between a JS exception inside the injected script and a null return value.
+**Requirements:**
+- Not enforced - no coverage config detected
+- No coverage tools installed (no nyc, c8, jest coverage config)
 
 ## Test Types
 
-**Unit Tests:** Not used.
+**Unit Tests:**
+- Not present
 
-**Integration Tests:** Not used as automated tests. Manual equivalents are the diagnostic scripts and HTTP endpoints listed above.
+**Integration Tests:**
+- Not present
 
-**End-to-End Tests:** Not used. The equivalent is running the server, opening a chat in Antigravity or Claude Code, navigating to the phone UI, and manually verifying each feature works.
+**E2E Tests:**
+- Not present
+- Manual testing indicated by hand-written error scenarios in UI code
+- Example: `clickElement()` function tests multiple DOM traversal strategies inline (server.js lines 341-396)
 
-**Browser Tests (Playwright, Cypress, etc.):** Not used.
+## Testing Approach Observed
 
-## Coverage
+**Manual Validation Pattern:**
+Instead of automated tests, the codebase uses inline validation and fallback strategies:
 
-**Requirements:** None enforced.
+**DOM Element Location:**
+Multiple strategies tested in order within single CDP expressions:
+```javascript
+// From server.js lines 217-243 (setMode function)
+// Strategy 1: Look for data-tooltip-id patterns (most reliable)
+modelBtn = document.querySelector('[data-tooltip-id*="model"], ...');
 
-**Current state:** 0% automated coverage. No tooling configured to measure it.
+// Strategy 2: Look for buttons/elements containing model keywords
+if (!modelBtn) {
+    const candidates = Array.from(document.querySelectorAll('button, ...'))
+        .filter(el => { ... });
+    modelBtn = candidates.find(el => { ... }) || candidates[0];
+}
 
-## What to Test if Adding Tests
+// Strategy 3: Traverse from text nodes up to clickable parents
+if (!modelBtn) {
+    const allEls = Array.from(document.querySelectorAll('*'));
+    const textNodes = allEls.filter(el => { ... });
+    // Walk up 5 levels looking for clickable parent
+    for (const el of textNodes) {
+        let current = el;
+        for (let i = 0; i < 5; i++) {
+            if (!current) break;
+            if (current.tagName === 'BUTTON' || ...) {
+                modelBtn = current;
+                break;
+            }
+            current = current.parentElement;
+        }
+    }
+}
+```
 
-If automated tests are introduced, the highest-value areas to cover first:
+**Error Response Pattern:**
+Functions return error objects for validation, allowing callers to decide handling:
+```javascript
+// From server.js line 391
+if (res.result?.value?.success) return res.result.value;
+// If we found it but click didn't return success (unlikely with this script), continue to next context
+```
 
-**`targets/antigravity.js` and `targets/claude.js` — `discover(list)`:**
-Pure functions that filter a CDP `/json/list` array. Easily unit-tested with fixture data arrays. No external dependencies required.
+**Context Fallback Pattern:**
+Multiple execution contexts tried sequentially, allowing graceful degradation:
+```javascript
+// From server.js lines 383-394
+for (const ctx of cdp.contexts) {
+    try {
+        const res = await cdp.call("Runtime.evaluate", { ... });
+        if (res.result?.value?.success) return res.result.value;
+    } catch (e) { }
+}
+return { error: 'Click failed in all contexts...' };
+```
 
-**`server.js` — `hashString(str)`:**
-Pure function. Trivially testable. Used for change-detection integrity.
+**Input Validation Inline:**
+```javascript
+// From server.js line 209
+if (!['Fast', 'Planning'].includes(mode)) return { error: 'Invalid mode' };
 
-**`server.js` — `isLocalRequest(req)`:**
-Pure function given a mock `req` object. Tests should cover all IP range prefixes: `127.0.0.1`, `::1`, `192.168.x.x`, `10.x.x.x`, `172.16–31.x.x`, and external IPs that must return false.
+// From server.js line 1634
+if (!message) {
+    return res.status(400).json({ error: 'Message required' });
+}
+```
 
-**`server.js` — `getLocalIP()`:**
-Side-effectful (reads `os.networkInterfaces()`). Testable by mocking `os.networkInterfaces` return value.
+**Snapshot Verification Pattern:**
+Hash-based change detection to avoid unnecessary DOM updates:
+```javascript
+// From app.js lines 472-482
+const newCssHash = data.css ? data.css.length + ':' + data.css.slice(0, 64) : '';
+if (newCssHash !== lastDynamicCssHash) {
+    // Only update if CSS changed
+    styleTag.textContent = data.css || '';
+    lastDynamicCssHash = newCssHash;
+}
+```
 
-**`public/js/app.js` — `escapeHtml(text)`:**
-Pure DOM-based function. Testable in a jsdom environment. Critical to XSS safety in history rendering.
+## Testing Recommendations
 
-**`public/js/app.js` — `addMobileCopyButtons()`:**
-DOM manipulation. Testable in jsdom. Should verify: skip if already present, single-line detection, copy button insertion.
+**Current State:**
+- No automated test infrastructure
+- Manual UI testing through Chrome DevTools/CDP inspection
+- Reliability depends on multiple fallback strategies and error handling
 
-## Known Gaps
+**Risk Areas Without Tests:**
+- `captureSnapshot()` functions in targets - complex DOM manipulation
+- `injectMessage()` - message injection into multiple targets
+- WebSocket reconnection logic - connection state machine
+- Authentication middleware - cookie parsing and validation
 
-There are no automated guards against:
-- Regression in `injectMessage` when target UIs update their DOM structure
-- `captureSnapshot` returning `null` when chat containers change IDs
-- Broken auth cookie validation after `SESSION_SECRET` changes
-- Concurrent WebSocket clients producing race conditions in `lastSnapshot`
-- `startNewChat` / `selectChat` failing silently when Antigravity's toolbar changes
+**Adding Tests:**
+To implement testing, add to `package.json`:
+```json
+{
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "node-mocks-http": "^1.13.0"
+  },
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
+  }
+}
+```
 
-All of these currently rely on the developer running the app and observing behavior.
+**Test File Locations (If Added):**
+- `__tests__/server.test.js` - Server route handlers
+- `__tests__/targets/antigravity.test.js` - Antigravity target functions
+- `__tests__/targets/claude.test.js` - Claude target functions
+- `public/__tests__/app.test.js` - Client-side app functions
+
+## Mocking Strategy
+
+**Would Use:**
+- Mock CDP connections via Jest mocks for context evaluation
+- Mock WebSocket for client testing
+- Mock HTTP responses with node-mocks-http
+- Mock file system for snapshot tests
+
+**Example Mock Pattern (Not Currently Used):**
+```javascript
+// Would mock cdp.call() to test captureSnapshot without real CDP
+jest.mock('../cdp', () => ({
+    call: jest.fn().mockResolvedValue({
+        result: { value: { html: '<div>test</div>', css: '' } }
+    })
+}));
+```
+
+## Debug/Inspection Endpoints
+
+**Manual Testing Points:**
+- `/debug-ui` (server.js line 1593) - Full UI tree inspection via CDP
+- `/ui-inspect` (server.js line 1657) - Button scanning and frame analysis
+- `/cdp-targets` (server.js line 1852) - Lists all discovered CDP targets
+- `/health` (server.js line 1550) - Server/CDP connection health
+- `/ssl-status` (server.js line 1562) - HTTPS certificate status
+
+These endpoints serve as manual test hooks for development.
+
+## Error Scenario Testing
+
+**Implicit Test Scenarios in Code:**
+
+1. **CDP Connection Loss** (server.js lines 1336-1359):
+   - Monitors connection state, logs reconnection attempts
+   - Triggers `initCDP()` on connection loss
+
+2. **Missing DOM Elements** (server.js lines 341-396):
+   - Tests multiple selector strategies
+   - Returns error with element count found
+
+3. **Timeout Handling** (server.js lines 186-199):
+   - 30-second timeout on CDP calls
+   - Cleans up pending calls to prevent memory leaks
+
+4. **Auth Failures** (server.js lines 1452-1485):
+   - 401 response on invalid cookie
+   - Auto-redirect to login on client
+
+5. **Network Recovery** (app.js lines 414-415):
+   - WebSocket reconnects every 2 seconds on disconnect
+   - Maintains state across reconnections
 
 ---
 
-*Testing analysis: 2026-04-07*
+**Summary:** This is a **manual-testing** codebase with no automated test suite. Reliability is achieved through:
+- Multiple DOM traversal strategies with fallbacks
+- Error object returns instead of exceptions
+- Context-level fault tolerance (try next execution context)
+- Hash-based deduplication
+- Explicit validation on entry points

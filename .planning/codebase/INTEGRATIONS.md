@@ -2,181 +2,175 @@
 
 **Analysis Date:** 2026-04-07
 
-## Core Protocol: Chrome DevTools Protocol (CDP)
+## APIs & External Services
 
-The entire purpose of this application hinges on CDP. The server connects to locally-running Electron/VS Code apps via their CDP WebSocket endpoints and drives them via JavaScript injection.
+**Chrome DevTools Protocol (CDP):**
+- Local debugging protocol for browser automation
+- Targets: Antigravity chat UI (port 9000) and Claude Code VS Code extension (ports 9000-9003)
+- SDK/Client: Native WebSocket via `ws` package
+- Purpose: Remote DOM inspection, JavaScript execution, event triggering, snapshot capture
+- Connection: `connectCDP()` in `server.js` establishes WebSocket to chrome://inspect targets
 
-**Discovery:**
-- On startup (and in the polling loop), server calls `http://127.0.0.1:{port}/json/list` for each port in `[9000, 9001, 9002, 9003]`
-- Implementation: `getJson()` in `server.js` using Node.js `http.get`
-- Results passed to each target's `discover(list)` function to claim matching targets
+**Browser Discovery:**
+- Endpoint: `http://127.0.0.1:[9000-9003]/json/list` 
+- Purpose: Discover available debuggable tabs and their CDP endpoints
+- Used by: `discoverCDP()` function in `server.js` (lines 119-143)
+- Targets: `antigravity.js` and `claude.js` define discovery logic per application
 
-**Connection:**
-- Raw WebSocket connection to the `webSocketDebuggerUrl` returned by `/json/list`
-- Implemented as a custom CDP client in `connectCDP()` in `server.js`
-- Tracks pending calls by ID with 30-second timeout (`CDP_CALL_TIMEOUT = 30000`)
-- Tracks execution contexts via `Runtime.executionContextCreated` / `Destroyed` / `Cleared` events
-
-**CDP Methods Used:**
-- `Runtime.enable` — enables execution context tracking on connect
-- `Runtime.evaluate` — the primary operation; injects JavaScript strings into target pages
-- `Page.getFrameTree` — enumerates all frames; used by `/ui-inspect` endpoint
-
-**Target: Antigravity**
-- File: `targets/antigravity.js`
-- Discovery: looks for `t.url?.includes('workbench.html')` or title containing `'workbench'`/`'Antigravity'` in `/json/list`
-- Snapshot root: `document.getElementById('conversation')` || `#chat` || `#cascade`
-- Message injection: `document.execCommand('insertText')` on `[contenteditable="true"]` element, then clicks `svg.lucide-arrow-right` submit button
-
-**Target: Claude Code VS Code Extension**
-- File: `targets/claude.js`
-- Discovery: looks for `extensionId=Anthropic.claude-code` in target URL; prefers `purpose=webviewView`
-- Snapshot root: `document.body` (no `#cascade` container)
-- Message injection: finds `[contenteditable="plaintext-only"]` inside `<iframe id="active-frame">`; submit button found by `aria-label="Send message"` or SVG icon class
-- Extra actions: `performAction(cdp, action)` supports `'add-file'`, `'slash-command'`, `'toggle-edit-auto'`, `'bypass'`
-- Toolbar state: `getToolbarState(cdp)` reads `aria-pressed` on the Edit Auto toggle button
-
-## Tunneling: ngrok
-
-**Purpose:** Expose the local Express server to the public internet so phones not on the same Wi-Fi can connect.
-
-**Used In:** `launcher.py` only — not referenced in `server.js`
-
-**SDK/Client:** `pyngrok` Python library (auto-installed by `launcher.py` if missing)
-
-**Auth:** `NGROK_AUTHTOKEN` env var — `ngrok.set_auth_token(token)` in launcher; without it, tunnels expire after 1 hour
-
-**Connection pattern:**
-```python
-tunnel = ngrok.connect(addr, host_header="rewrite")
-public_url = tunnel.public_url  # e.g. https://abc123.ngrok.io
-```
-
-**Magic link pattern:** public URL is appended with `?key={APP_PASSWORD}` so scanning the QR auto-logs in the user: `server.js` checks `req.query.key === APP_PASSWORD` and sets the auth cookie.
-
-**ngrok bypass header:** All fetch calls in `public/js/app.js` include `'ngrok-skip-browser-warning': 'true'` header; server also sets `res.setHeader('ngrok-skip-browser-warning', 'true')` to prevent ngrok interstitial pages.
-
-## Claude Code Chat History: Local Filesystem
-
-**Purpose:** Read Claude Code conversation history without going through CDP (Claude Code doesn't expose history via its web UI in the same way Antigravity does).
-
-**Path:** `~/.claude/projects/` — read via `os.homedir()` in `server.js`
-
-**Format:** JSONL files (`*.jsonl`) where each line is a JSON object; `type === 'user'` entries contain `message.content` arrays with `{type: 'text', text: '...'}` parts.
-
-**Used in:** `/chat-history` GET endpoint in `server.js` when `currentTarget === 'claude'`
-
-**Filtering:** Skips system-injected lines starting with `<ide_`, `<local-command`, `<system`, `<user-prompt`, `<command-`
-
-## Google Fonts CDN
-
-**Purpose:** Load UI typography for the mobile web interface.
-
-**Fonts:**
-- `Inter` (weights 400, 500, 600) — body/UI text
-- `JetBrains Mono` (weights 400, 500) — code blocks rendered from chat snapshots
-
-**URL:** `https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap`
-
-**In:** `public/index.html` — `<link rel="preconnect">` for `fonts.googleapis.com` and `fonts.gstatic.com`
-
-**Note:** Requires internet connectivity at mobile client load time; no self-hosted fallback.
-
-## SSL Certificate Generation
-
-**Purpose:** Enable HTTPS so that the browser Clipboard API works on mobile (requires secure context).
-
-**Tool:** `generate_ssl.js` — called via `node generate_ssl.js` or via the `/generate-ssl` POST endpoint in `server.js`
-
-**Strategy (in priority order):**
-1. System `openssl` on `$PATH`
-2. `C:\Program Files\Git\usr\bin\openssl.exe` (Git for Windows)
-3. `C:\Program Files (x86)\Git\usr\bin\openssl.exe`
-4. Node.js `crypto.generateKeyPairSync('rsa')` + manual ASN.1 certificate construction (no SAN support — shows URL mismatch warning on mobile)
-
-**Output:** `certs/server.key` and `certs/server.cert` (gitignored)
-
-## Authentication & Sessions
-
-**Auth Provider:** Custom — no third-party identity service
-
-**Mechanism:**
-- Password hashing: `hashString(APP_PASSWORD + AUTH_SALT)` — a fast djb2-style integer hash (not bcrypt/argon2)
-- Sessions: HMAC-signed cookie `ag_auth_token` via `cookie-parser`; secret from `SESSION_SECRET` env var
-- Cookie lifetime: 30 days (`maxAge: 30 * 24 * 60 * 60 * 1000`)
-
-**Bypass rules:**
-- Local Wi-Fi requests (192.168.x.x, 10.x.x.x, 172.16–31.x.x, loopback) skip auth entirely — detected in `isLocalRequest(req)` by checking `req.ip` and absence of `x-forwarded-for` header
-- Magic link via `?key={APP_PASSWORD}` query param sets the cookie and redirects to `/`
-
-**Login endpoints:**
-- `POST /login` — JSON body `{password}`; sets signed cookie on success
-- `POST /logout` — clears the cookie
+**ngrok Tunneling (Optional):**
+- Service: ngrok (https://dashboard.ngrok.com)
+- Auth: `NGROK_AUTHTOKEN` environment variable
+- Purpose: Expose local server to internet for mobile access from outside home network
+- Not directly integrated - user manually configures ngrok separately
 
 ## Data Storage
 
-**Databases:** None — no SQL, NoSQL, or ORM
-
-**Runtime State (in-memory, lost on restart):**
-- `cdpConnections` Map: `targetKey → {port, url, ws, call, contexts}` — active CDP WebSocket connections
-- `lastSnapshot` / `lastSnapshotHash` — most recent captured HTML+CSS snapshot
-- `currentTarget` — which target (`'antigravity'` or `'claude'`) is actively polled
-
-**Browser-side Persistence:**
-- `localStorage.getItem('sslBannerDismissed')` — single boolean; tracks if SSL upgrade banner was dismissed
-
 **File System:**
-- `certs/server.key`, `certs/server.cert` — self-signed SSL certs (read at startup)
-- `server_log.txt` — written by `launcher.py` with stdout/stderr from node process (gitignored)
-- `~/.claude/projects/**/*.jsonl` — read-only access for Claude Code history
+- Primary storage for Claude Code session history
+- Location: `~/.claude/projects/` (user home directory)
+- Format: JSONL files (one JSON object per line)
+- Read by: `/chat-history` endpoint (lines 2037-2093 in `server.js`)
+- Contains: Session metadata, user messages, timestamps
+
+**In-Memory State:**
+- Current target: `currentTarget` variable
+- CDP connections map: `cdpConnections` Map object
+- Last snapshot: `lastSnapshot` and `lastSnapshotHash`
+- No persistence between server restarts
+
+**Databases:**
+- None (stateless backend, state stored in client session or filesystem)
+
+**File Storage:**
+- Local filesystem only (no cloud storage)
+- Static files served from `public/` directory
+
+**Caching:**
+- Snapshot caching via hash comparison (line 1364-1369 in `server.js`)
+- Prevents redundant WebSocket broadcasts
+
+## Authentication & Identity
+
+**Auth Provider:**
+- Custom implementation (not third-party)
+- Approach: 
+  - Password-based with hashed token
+  - Cookie-based sessions
+  - Local network auto-exemption
+  - Magic link via query parameter
+
+**Implementation Details:**
+- Token generation: `hashString()` function (lines 1266-1274)
+- Cookie name: `ag_auth_token`
+- Cookie attributes: httpOnly, signed, 30-day expiration
+- Session secret: `process.env.SESSION_SECRET` or default fallback
+
+**Environment Configuration:**
+- `APP_PASSWORD` - Master password for interface
+- `AUTH_SALT` - Unique salt for token hashing
+- `SESSION_SECRET` - Secure cookie signing key
 
 ## Monitoring & Observability
 
-**Error Tracking:** None — no Sentry, Datadog, or similar
+**Error Tracking:**
+- None (no third-party error reporting)
 
-**Logging:**
-- `console.log` / `console.warn` / `console.error` in `server.js` for CDP discovery, connection events, snapshot polling, and send results
-- `server_log.txt` — file written by `launcher.py` redirecting Node.js stdout/stderr
+**Logs:**
+- Console-based (stdout/stderr)
+- Color-coded output with emoji indicators
+- Key events logged:
+  - CDP discovery and connection (lines 1302-1328)
+  - Snapshot captures and updates (line 1381)
+  - Client connections (line 1904)
+  - Server startup (lines 2131-2136)
 
-**Health Check:**
-- `GET /health` — returns `{status, cdpConnected, uptime, timestamp, https}`
-- `GET /ssl-status` — returns cert presence and HTTPS active status
-- `GET /cdp-targets` — returns raw `/json/list` results from all scanned ports
+**Debugging:**
+- `/debug-ui` endpoint (lines 2593-2602) - UI tree inspection
+- `/ui-inspect` endpoint (lines 2657-1850) - Button and element inventory
+- `/cdp-targets` endpoint (lines 2853-2864) - Available CDP targets
 
 ## CI/CD & Deployment
 
-**Hosting:** Local developer machine — not deployed to cloud
+**Hosting:**
+- Local development on Windows/macOS/Linux
+- Requires manually running application with debugging port
+- Optional public exposure via ngrok tunnel
 
-**CI Pipeline:** None detected — no GitHub Actions workflows, no `.travis.yml`, no `Dockerfile`
+**CI Pipeline:**
+- None detected (no GitHub Actions, no automated tests)
 
-**Startup methods (in order of typical use):**
-1. `python launcher.py --mode local` or `--mode web` — full launcher with dependency checks, ngrok, and QR code
-2. `start_ag_phone_connect.sh` / `start_ag_phone_connect.bat` — runs `launcher.py --mode local`
-3. `start_ag_phone_connect_web.sh` / `start_ag_phone_connect_web.bat` — runs `launcher.py --mode web`
-4. `npm start` / `node server.js` — bare server start (no ngrok, no QR)
+**Start Scripts:**
+- `npm start` or `npm run dev` - Start server
+- Bash scripts: `start_ag_phone_connect.sh`, `start_ag_phone_connect_web.sh`
+- Batch scripts: `start_ag_phone_connect.bat`, `start_ag_phone_connect_web.bat`
 
 ## Environment Configuration
 
-**Required:**
-- `APP_PASSWORD` — mobile dashboard password (default: `'antigravity'`)
-- `PORT` — server listen port (default: `3000`)
+**Required env vars:**
+- `APP_PASSWORD` - Access password for mobile interface
+- `NGROK_AUTHTOKEN` - (Optional) For public tunneling
 
-**Strongly recommended:**
-- `NGROK_AUTHTOKEN` — prevents 1-hour tunnel expiry in web mode
+**Optional env vars:**
+- `PORT` - Server port (default: 3000)
+- `SESSION_SECRET` - Secure session signing key (default: fallback value)
+- `AUTH_SALT` - Token hashing salt (default: fallback value)
+- `xxx_API_KEY` - Placeholder for AI provider keys (user-defined, not used by core app)
 
-**Optional (hardcoded fallbacks exist but are insecure for production):**
-- `SESSION_SECRET` — HMAC key for signed cookies
-- `AUTH_SALT` — password hash salt
+**Secrets location:**
+- `.env` file (git-ignored, contains local configuration)
+- `.env.example` file (template with placeholder values)
+- File location: `/c/Users/Ocean/.gemini/antigravity/scratch/Phone-Chat/`
 
-**Secrets location:** `.env` file (gitignored); template at `.env.example`
+**Certificate Location:**
+- SSL certs: `certs/server.key` and `certs/server.cert`
+- Auto-generated by `generate_ssl.js` if missing
+- Optional - server falls back to HTTP if missing
 
 ## Webhooks & Callbacks
 
-**Incoming webhooks:** None — no external service calls into this app
+**Incoming:**
+- None (application does not accept webhooks)
 
-**Outgoing webhooks:** None — app is entirely local/pull-based
+**Outgoing:**
+- WebSocket broadcasts to connected clients when snapshots update (lines 1372-1379)
+- Real-time UI synchronization via WebSocket messages: `type: 'snapshot_update'`
 
-**Internal real-time push:** Server → mobile client via WebSocket `snapshot_update` messages; polling interval `POLL_INTERVAL = 1000ms` in `server.js`
+## Multi-Target Architecture
+
+**Supported Targets:**
+1. **Antigravity** (port 9000-9003)
+   - Discovery: `targets/antigravity.js` (lines 24-33)
+   - Identifies via: `workbench.html` or title containing "Antigravity" or "workbench"
+   - Root element: `#conversation`, `#chat`, or `#cascade`
+
+2. **Claude Code** (port 9000-9003)
+   - Discovery: `targets/claude.js` (lines 15-29)
+   - Identifies via: `extensionId=Anthropic.claude-code` or title containing "Claude Code"
+   - Prioritizes: `purpose=webviewView` frame
+   - Root element: `document.body` inside `#active-frame` iframe
+
+**Target Registry:**
+- Defined in `server.js` (line 20): `const TARGETS = { antigravity, claude }`
+- Runtime switching: `/switch-target` endpoint (lines 1941-1958)
+- Current target: `currentTarget` variable (default: 'antigravity')
+
+## Integration Patterns
+
+**Remote Execution:**
+- CDP `Runtime.evaluate()` - Execute JavaScript in browser contexts
+- Timeout: 30 seconds per call (line 156)
+- Used for: DOM queries, event injection, screenshot capture, action triggering
+
+**Message Injection:**
+- Text inserted into editor via: `document.execCommand()`, fallback to direct text assignment
+- Submit via: Button click or keyboard Enter event
+- Implementation: `injectMessage()` in each target module
+
+**Snapshot Capture:**
+- DOM cloning and serialization to HTML
+- CSS rule extraction and filtering
+- Image conversion to base64 data URIs
+- Inline style normalization for mobile rendering
 
 ---
 

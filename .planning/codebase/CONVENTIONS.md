@@ -2,282 +2,156 @@
 
 **Analysis Date:** 2026-04-07
 
-## Language & Module System
-
-**Language:** Plain JavaScript — no TypeScript, no JSDoc type annotations in practice.
-
-**Module System:** ES Modules throughout. `"type": "module"` is set in `package.json`. All files use `import`/`export` syntax. `.js` extensions are required in local import paths.
-
-**Runtime Target:**
-- Node.js ≥16 for server-side code: `server.js`, `targets/`, utility scripts
-- Vanilla browser JS (no bundler, no transpiler) for `public/js/app.js`
-
 ## Naming Patterns
 
 **Files:**
-- Multi-word filenames use `snake_case`: `generate_ssl.js`, `ui_inspector.js`, `find_claude_editor.js`, `discovery_claude.js`, `inspect_claude_webview.js`
-- Single-word names are lowercase: `server.js`, `launcher.py`
-- Target modules: lowercase, no separator: `targets/antigravity.js`, `targets/claude.js`
-- Public assets: lowercase: `public/js/app.js`, `public/css/style.css`, `public/index.html`
+- Camel case for utility/module files: `server.js`, `ui_inspector.js`
+- Kebab case for script entry points: `generate_ssl.js`, `discovery_claude.js`
+- Target modules use snake_case: `targets/antigravity.js`, `targets/claude.js`
+- JS files grouped in `public/js/` and root directory based on purpose
+- Example: `/c/Users/Ocean/.gemini/antigravity/scratch/Phone-Chat/server.js`, `/c/Users/Ocean/.gemini/antigravity/scratch/Phone-Chat/public/js/app.js`
 
 **Functions:**
-- All function declarations use `camelCase`: `killPortProcess`, `getLocalIP`, `discoverCDP`, `connectCDP`, `setMode`, `stopGeneration`, `clickElement`, `hashString`, `isLocalRequest`, `initCDP`, `startPolling`, `createServer`, `main`
-- Descriptive verb+noun form: `captureSnapshot`, `injectMessage`, `performAction`, `getToolbarState`, `runInContexts`
-- Use named function declarations at module level, not arrow-function assignments
-- Mark async functions explicitly with the `async` keyword — never infer from usage
+- Use `camelCase` for all function declarations and method names
+- Async functions prefixed with `async`: `async function captureSnapshot(cdp)`, `async function fetchWithAuth(url, options = {})`
+- Helper functions in modules exported as named functions: `export function discover(list)`, `export async function captureSnapshot(cdp)`
+- Event handlers prefixed with descriptive verbs: `clickElement()`, `remoteScroll()`, `startNewChat()`
+- Example from `server.js` lines 106-116: `function getJson(url)`, `function isLocalRequest(req)`
 
 **Variables:**
-- Module-level mutable state: `camelCase` — `cdpConnections`, `currentTarget`, `lastSnapshot`, `lastSnapshotHash`
-- Module-level configuration / numeric limits: `SCREAMING_SNAKE_CASE` — `TARGETS`, `PORTS`, `POLL_INTERVAL`, `SERVER_PORT`, `APP_PASSWORD`, `AUTH_COOKIE_NAME`, `AUTH_TOKEN`, `CDP_CALL_TIMEOUT`, `SCROLL_SYNC_DEBOUNCE`, `USER_SCROLL_LOCK_DURATION`
-- Local function variables: `camelCase` — `idCounter`, `pendingCalls`, `errorSummary`, `opensslPath`
+- Use `const` by default for all variables except loop counters or state that must be reassigned
+- Module-level state uses `let`: `let cdpConnections = new Map()`, `let currentTarget = 'antigravity'`
+- DOM element references end with descriptive names: `chatContainer`, `messageInput`, `sendBtn`, `statusDot`
+- Flags use `is`/`has` prefix: `hasChat`, `isLocalRequest()`, `autoRefreshEnabled`
+- State values use descriptive names with intent comments: `userScrollLockUntil = 0 // Timestamp until which we respect user scroll` (app.js line 29)
+- Configuration constants in UPPER_SNAKE_CASE: `PORTS`, `POLL_INTERVAL`, `SERVER_PORT`, `APP_PASSWORD`, `AUTH_COOKIE_NAME`
+- Example from `app.js` lines 2-24: `const chatContainer`, `let autoRefreshEnabled`, `let userIsScrolling`
 
-**CDP Expression Variables:**
-Inline JavaScript strings sent to the browser via CDP are stored as uppercase `const` variables:
-
-- `EXP` — dominant pattern (used in 10 of 11 CDP-calling functions in `server.js`)
-- `EXPRESSION` — used in `remoteScroll` and `injectMessage` in `targets/`
-- `CAPTURE_SCRIPT` — used in both `targets/` files for `captureSnapshot`
-- `INSPECT_SCRIPT` — used in `ui_inspector.js`
-
-Use `EXP` for new CDP expression variables unless in a target file's `captureSnapshot`.
+**Types:**
+- No TypeScript - pure JavaScript (ES6 modules)
+- Use JSDoc-style comments for complex functions (see Claude target: `/** Claude Code Target */`)
+- Objects returned as plain `{ }` with descriptive property names: `{ error: 'message' }`, `{ success: true, method: 'attempt' }`
 
 ## Code Style
 
 **Formatting:**
-- No formatter config present — no `.prettierrc`, no `biome.json`, no ESLint config
-- Indentation: **4 spaces** consistently across all JS files
-- Semicolons: always used
-- Strings: single quotes for static values, template literals for interpolation or multi-line CDP expressions
+- No linting config detected (no `.eslintrc`, `.prettierrc`)
+- Apparent default formatting: 4-space indentation
+- Long lines often exceed 80 characters but maintain readability
+- Ternary operators used for concise conditional logic
+- Example from `server.js` line 92-94: Multi-line conditionals with proper indentation
 
 **Linting:**
-- No ESLint or similar tooling configured
-- No pre-commit hooks or CI lint checks
-- Style is enforced by convention, not automation
+- Not detected - no linting configuration files present
+- Code style appears ad-hoc but consistent within each file
 
 ## Import Organization
 
-Imports are not strictly grouped. Observed order in `server.js`:
+**Order:**
+1. Built-in Node.js modules first: `import 'dotenv/config'`, `import express`, `import fs`, `import http`
+2. Third-party npm packages: `import compression`, `import cookieParser`, `import { WebSocketServer } from 'ws'`
+3. Local modules/utilities: `import { fileURLToPath } from 'url'`, `import { inspectUI } from './ui_inspector.js'`
+4. Named imports from target modules: `import * as antigravity from './targets/antigravity.js'`
 
-1. Side-effect imports: `import 'dotenv/config'`
-2. Third-party packages (mixed with Node built-ins): `express`, `compression`, `cookieParser`, `ws`
-3. Node.js built-ins: `http`, `https`, `fs`, `os`, `child_process`
-4. URL/path helpers: `url`, `path`
-5. **Local modules last**: `./ui_inspector.js`, `./targets/antigravity.js`, `./targets/claude.js`
+**Path Aliases:**
+- No path aliases detected - all imports use relative paths: `'./ui_inspector.js'`, `'./targets/antigravity.js'`
+- Absolute paths from project root not used
 
-Note: built-ins and third-party are not strictly separated — local modules always appear last.
-
-**Import styles:**
-
-Namespace imports for target modules (allows dynamic dispatch via `TARGETS[name]`):
-```javascript
-import * as antigravity from './targets/antigravity.js';
-import * as claude from './targets/claude.js';
-```
-
-Named imports for single utilities:
-```javascript
-import { inspectUI } from './ui_inspector.js';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-```
-
-No path aliases — all local imports use relative paths with `.js` extensions.
-
-## Exports
-
-Target modules (`targets/antigravity.js`, `targets/claude.js`) export named functions directly:
-```javascript
-export function discover(list) { ... }
-export async function captureSnapshot(cdp) { ... }
-export async function injectMessage(cdp, text) { ... }
-```
-
-Utility modules (`ui_inspector.js`) export named async functions:
-```javascript
-export async function inspectUI(cdp) { ... }
-```
-
-**No default exports anywhere in the codebase.**
-
-`server.js`, `public/js/app.js`, and the diagnostic scripts (`discovery_claude.js`, `find_claude_editor.js`, `inspect_claude_webview.js`) export nothing — they are entry points or IIFEs.
+**Module System:**
+- ES6 `import`/`export` syntax (configured via `"type": "module"` in package.json)
+- Named exports for target modules: `export function discover()`, `export async function captureSnapshot()`
+- Default handler pattern for utility modules
 
 ## Error Handling
 
-**Express route pattern** — validate input, check CDP, delegate, return:
-```javascript
-app.post('/set-mode', async (req, res) => {
-    const { mode } = req.body;
-    const cdp = cdpConnections.get(currentTarget);
-    if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
-    const result = await setMode(cdp, mode);
-    res.json(result);
-});
-```
-
-**CDP context loop pattern** — try each context, silently swallow mismatch errors:
-```javascript
-for (const ctx of cdp.contexts) {
-    try {
-        const res = await cdp.call("Runtime.evaluate", {
-            expression: EXP,
-            returnByValue: true,
-            awaitPromise: true,
-            contextId: ctx.id
-        });
-        if (res.result?.value) return res.result.value;
-    } catch (e) { }  // intentional: wrong context, not a real error
-}
-return { error: 'Context failed' };
-```
-
-Empty catch blocks in context loops are intentional — failure means the context is not the correct execution environment.
-
-**Return value conventions — two distinct patterns:**
-
-Pattern A: UI action functions (`setMode`, `stopGeneration`, `clickElement`, `setModel`, `startNewChat`, `remoteScroll`, etc.):
-```javascript
-return { success: true, method: 'data-tooltip-id' };  // success
-return { error: 'Element not found' };                 // failure
-```
-
-Pattern B: Message injection only (`injectMessage` in both `targets/antigravity.js` and `targets/claude.js`):
-```javascript
-return { ok: true, method: "click_submit" };   // success
-return { ok: false, reason: "busy" };          // failure
-```
-
-Use Pattern A for all new CDP-interacting functions. Use Pattern B only when extending `injectMessage`.
-
-**Fatal server errors:**
-```javascript
-catch (err) {
-    console.error('❌ Fatal error:', err.message);
-    process.exit(1);
-}
-```
-
-**Browser-side (app.js):** `try/catch` with `console.error` logging; user-visible `alert()` used only for unrecoverable mode/model set failures.
+**Patterns:**
+- Errors caught silently with `catch (e) { }` for non-critical operations (network discovery, UI inspection)
+- Example from `server.js` line 183: `} catch (e) { }` in message handlers
+- Error objects returned as `{ error: 'description' }` from functions, never thrown
+- Example from `server.js` line 209: `if (!['Fast', 'Planning'].includes(mode)) return { error: 'Invalid mode' };`
+- CDP call timeouts with explicit timeout IDs tracked in Map: `pendingCalls = new Map()` (server.js line 154)
+- Timeout rejection with descriptive message: `reject(new Error('CDP call ${method} timed out after ${CDP_CALL_TIMEOUT}ms'))` (server.js line 193)
+- Network errors bubble up with `reject(e)` in Promise chains (server.js line 114)
+- Client-side errors logged to console without throwing: `console.error('[SYNC] Failed to sync state', e)`
+- Graceful degradation common: missing elements return null, continue to next context (server.js line 301: `if (res.result?.value) return res.result.value;`)
 
 ## Logging
 
-**Server-side — emoji prefix system** in `console.log`/`console.error`/`console.warn`:
+**Framework:** 
+- Native `console.*` methods (no external logging library)
+- `console.log()` for info: `console.log('🚀 [PHONE-CHAT] Server running...')`
+- `console.error()` for errors: `console.error('❌ Failed to connect...')`
+- `console.warn()` for warnings: `console.warn('⚠️ Snapshot capture issue')`
 
-| Emoji | Meaning |
-|-------|---------|
-| `🔍` | Discovering / searching |
-| `🔌` | Connecting |
-| `✅` | Connected / success |
-| `❌` | Fatal failure |
-| `⚠️` | Warning / non-fatal issue |
-| `📸` | Snapshot updated |
-| `📱` | WebSocket client event |
-| `🔄` | Reconnecting / switching |
-| `🛑` | Shutdown signal |
-| `🚀` | Server started |
-
-**Browser-side (app.js) — bracket-tag prefix system:**
-```javascript
-console.log('[SYNC] State refreshed from Desktop:', data);
-console.log('[AUTH] Unauthorized, redirecting to login...');
-console.log('[COPY] Success via Clipboard API');
-console.log('[TARGET] Switched to', id);
-console.log('[WS] Connected');
-```
-
-Never log passwords, tokens, or cookie values.
+**Patterns:**
+- Prefix logs with emoji + bracketed context: `[PHONE-CHAT]`, `[TARGET]`, `[AUTH]`, `[SYNC]`
+- Example from `app.js` line 249: `console.log('[AUTH] Unauthorized, redirecting to login...')`
+- Server logs include status indicators: `🔍`, `🔌`, `✅`, `❌`, `⚠️`
+- Client-side logs use bracketed prefixes: `[SYNC]`, `[TARGET]`, `[AUTH]`
+- Verbose logging in debug endpoints for development inspection
 
 ## Comments
 
-**Section separators** in `app.js` delimit logical blocks:
-```javascript
-// --- Elements ---
-// --- State ---
-// --- Auth Utilities ---
-// --- WebSocket ---
-// --- Rendering ---
-```
+**When to Comment:**
+- Complex CDP expressions wrapped in inline JS strings get block comments explaining strategy
+- Example from `server.js` lines 211-290: Multi-line JS expression in string has `// STRATEGY:` comment
+- Inline comments explain non-obvious conditionals: `// Prefers real network IPs...` (line 79)
+- Cross-cutting concerns documented: `// Single centralized message handler (fixes MaxListenersExceeded warning)` (line 158)
+- TODO/FIXME comments sparse - only used for critical path issues
 
-**Inline strategy comments** inside CDP expressions document multi-step heuristics:
-```javascript
-// STRATEGY: Find the element that IS the current mode indicator.
-// Priority 1: Exact selector from user (data-tooltip-id=...)
-// Fallback: Use previous heuristics
-```
-
-**File-level block comments** in `targets/claude.js` document target differences:
-```javascript
-/**
- * Claude Code Target
- * Key differences from Antigravity:
- * - UI renders inside <iframe id="active-frame">
- * - Input element is <div contenteditable="plaintext-only">
- */
-```
-
-No JSDoc on individual functions. Comments are prose descriptions placed above the function rather than inside doc blocks.
-
-Shebang line on runnable scripts: `#!/usr/bin/env node` (present on `server.js` and `generate_ssl.js`).
-
-## Async Patterns
-
-Standard `async/await` throughout. Promise constructor used only when wrapping callback APIs:
-```javascript
-function getJson(url) {
-    return new Promise((resolve, reject) => {
-        http.get(url, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-                try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
-            });
-        }).on('error', reject);
-    });
-}
-```
-
-**Delay pattern** (used in CDP interaction before scraping):
-```javascript
-await new Promise(r => setTimeout(r, 600));
-```
-
-**Browser rendering sync** (in CDP-injected scripts, ensures React has re-rendered):
-```javascript
-await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-```
-
-**`__filename` / `__dirname` in ESM context** — use this boilerplate in any script needing filesystem paths:
-```javascript
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-```
+**JSDoc/TSDoc:**
+- Minimal JSDoc usage - only on target modules with `/** Module description */`
+- Example: `/** Antigravity Target - Original logic - do not modify without testing thoroughly. */` (targets/antigravity.js line 1-3)
+- No function-level JSDoc - types inferred from usage
 
 ## Function Design
 
-Express route handlers are thin: validate input → get CDP connection → delegate to named function → return result. Business logic lives in the named function, not inline in the route.
+**Size:**
+- Most functions 20-80 lines
+- Complex UI automation functions 50-150 lines (unavoidable due to DOM traversal logic)
+- Single responsibility per function: `getJson()` fetches HTTP, `discoverCDP()` discovers targets, etc.
+- Example from `server.js` lines 80-103: `getLocalIP()` is ~25 lines, focused on network detection
 
-Destructured parameters for multi-option functions:
-```javascript
-async function clickElement(cdp, { selector, index, textContent }) { ... }
-async function remoteScroll(cdp, { scrollTop, scrollPercent }) { ... }
-```
+**Parameters:**
+- Minimal parameters (usually 1-3)
+- Objects for options/config: `async function fetchWithAuth(url, options = {})`
+- CDP connection object passed through most functions: `cdp` parameter standard
+- Destructuring used for complex parameters: `async function clickElement(cdp, { selector, index, textContent })`
 
-Optional chaining (`?.`) and nullish coalescing (`??`) are used throughout. No lodash or utility libraries.
+**Return Values:**
+- Functions return objects with status/data: `{ success: true, method: 'method' }`, `{ error: 'message' }`
+- Consistent property names: `success`, `error`, `method`, `details`
+- Null returned for failed lookups (CDP contexts, UI elements)
+- Promises used for all async operations - no callback style
 
-## Module Design (Target Interface Contract)
+## Module Design
 
-Each file in `targets/` must export exactly three functions with these signatures:
+**Exports:**
+- Target modules export multiple named functions: `export function discover()`, `export async function captureSnapshot()`
+- Server uses wildcard imports for target modules: `import * as antigravity from './targets/antigravity.js'`
+- Registry pattern for targets: `const TARGETS = { antigravity, claude };` maps string IDs to modules (server.js line 20)
+- Browser/Client side uses anonymous IIFE for initialization: `(function initStaticStyles() { ... })()`
 
-```javascript
-export function discover(list)             // list = CDP /json/list array
-export async function captureSnapshot(cdp) // returns { html, css, scrollInfo, stats } | null
-export async function injectMessage(cdp, text) // returns { ok: boolean, ... }
-```
+**Barrel Files:**
+- Not used - single entry point per module
+- Targets are accessed by module name in registry
 
-New targets must implement all three. Register in `server.js`:
-```javascript
-const TARGETS = { antigravity, claude };  // add new target here
-```
+## Implementation Patterns
 
----
+**State Management:**
+- Global state at module/server level: `let cdpConnections = new Map()`, `let currentTarget = 'antigravity'`
+- Client-side state with `let` declarations at top of scope
+- HTML page state via DOM class toggles: `classList.add('active')`, `classList.remove('connected')`
+- LocalStorage for user preferences: `localStorage.getItem('sslBannerDismissed')`
 
-*Convention analysis: 2026-04-07*
+**Async Operations:**
+- All network operations wrapped in `try-catch`
+- Promise chains with `.then()` or `async-await`
+- Timeouts implemented with `setTimeout()` and tracked IDs
+- Example from `server.js` lines 186-199: Manual Promise wrapper with timeout cleanup
+
+**Event Handling:**
+- Direct `.addEventListener()` calls on DOM elements
+- Button actions trigger async fetch calls: `sendBtn.addEventListener('click', sendMessage)`
+- WebSocket events handled with `ws.on()` callbacks
+- No event delegation - direct element binding

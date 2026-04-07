@@ -5,116 +5,94 @@
 ## Languages
 
 **Primary:**
-- JavaScript (ES Modules) - All server logic, target drivers, utilities, and browser frontend
-  - Server side: `server.js`, `targets/antigravity.js`, `targets/claude.js`, `ui_inspector.js`, `generate_ssl.js`, `discovery_claude.js`, `find_claude_editor.js`
-  - Browser side: `public/js/app.js` (vanilla JS, no framework)
-  - No TypeScript — `.js` files throughout
-
-**Secondary:**
-- Python 3.x - Process orchestration and tunneling only (`launcher.py`)
-  - Spawns and monitors the Node.js server process
-  - Sets up ngrok public internet tunnels
-  - Renders terminal QR codes
-
-**Markup / Style:**
-- HTML5 - `public/index.html`, `public/login.html`
-- CSS3 - `public/css/style.css` (no preprocessor, no utility framework)
+- JavaScript (ES6+ with ESM) - Frontend client and backend server
+- Used throughout: `public/js/app.js`, `server.js`, `targets/*.js`
 
 ## Runtime
 
 **Environment:**
-- Node.js v24.14.0 (system-installed); requires `>=16.0.0` per `package.json` `engines` field
-- Python 3.13.1 (launcher only — not needed for bare `node server.js` start)
-
-**Module System:**
-- ES Modules (`"type": "module"` in `package.json`)
-- All source files use top-level `import`/`export` — no CommonJS `require()`
+- Node.js (v16+)
+- See `package.json`: `"engines": {"node": ">=16.0.0"}`
 
 **Package Manager:**
-- npm
-- Lockfile: `package-lock.json` present (gitignored post-initial commit per `.gitignore`)
+- npm 
+- Lockfile: `package-lock.json` (present)
 
 ## Frameworks
 
-**Server:**
-- Express 4.22.1 — HTTP REST API, middleware pipeline, static file serving from `public/`
-- ws 8.20.0 — used in dual roles:
-  1. `WebSocketServer` — push notifications to mobile browser clients
-  2. `WebSocket` client — CDP connections to Antigravity and Claude Code processes
+**Core:**
+- Express.js 4.18.2 - REST API server and static file serving
+- WebSocket (ws) 8.18.0 - Real-time bidirectional communication between client and desktop
 
-**Frontend:**
-- No framework — vanilla JavaScript DOM manipulation in `public/js/app.js`
-- No bundler, no transpiler, no build step — files served directly as static assets
+**Chrome DevTools Protocol (CDP):**
+- CDP WebSocket connections to local debuggable browser instances (Antigravity on port 9000-9003)
+- Custom implementation in `server.js` via WebSocket connections
 
-**Testing:**
-- None detected — no test framework installed or configured
-
-**Build / Dev:**
-- No build step required — `node server.js` starts the server directly
-- `npm start` and `npm run dev` both run `node server.js`
+**Client-Side:**
+- Vanilla JavaScript (no framework)
+- DOM manipulation and event handling via JavaScript
 
 ## Key Dependencies
 
 **Critical:**
-- `express` ^4.18.2 (installed: 4.22.1) — HTTP routing, JSON body parsing, static serving, auth middleware
-- `ws` ^8.18.0 (installed: 8.20.0) — WebSocket server for mobile clients AND WebSocket client for CDP to target apps; `cookieParser.signedCookie()` used to verify WebSocket auth
-- `cookie-parser` ^1.4.7 (installed: 1.4.7) — HMAC-signed cookies for session auth; `app.use(cookieParser(sessionSecret))` enables `req.signedCookies`
+- express 4.18.2 - HTTP server framework and routing
+- ws 8.18.0 - WebSocket server for real-time updates
+- compression 1.8.1 - HTTP response compression middleware
+- cookie-parser 1.4.7 - Session cookie handling
+- dotenv 16.4.7 - Environment variable configuration
 
 **Infrastructure:**
-- `dotenv` ^16.4.7 (installed: 16.6.1) — `.env` loading via `import 'dotenv/config'` at top of `server.js`
-- `compression` ^1.8.1 (installed: 1.8.1) — gzip/brotli compression middleware applied to all responses
-
-**Node.js Built-in Modules Used:**
-- `http`, `https` — dual HTTP/HTTPS server creation
-- `fs` — cert file reads, Claude JSONL history parsing
-- `os` — `os.networkInterfaces()` for LAN IP detection, `os.homedir()` for `~/.claude/projects/`
-- `path` — `join`, `dirname` for file path construction
-- `child_process` — `execSync` for port-killing (`netstat`/`lsof`/`taskkill`) and SSL generation
-- `crypto` — RSA key pair generation in fallback SSL cert path (`generate_ssl.js`)
-- `url` — `fileURLToPath`, `import.meta.url` for `__dirname` in ES Modules
-
-**Python Dependencies (auto-installed by `launcher.py` if missing):**
-- `pyngrok` — Python wrapper for ngrok binary; creates and manages public tunnels
-- `python-dotenv` — reads `.env` in Python launcher
-- `qrcode` — renders ASCII QR codes to terminal for mobile scan
+- None (pure Node.js, no ORM or database)
 
 ## Configuration
 
 **Environment:**
-- `.env` file loaded by `dotenv`; template at `.env.example`
-- Key variables consumed by `server.js`:
-  - `APP_PASSWORD` — dashboard password (defaults to `'antigravity'` if unset)
-  - `PORT` — server listen port (defaults to `3000`)
-  - `SESSION_SECRET` — HMAC key for signed cookies (hardcoded fallback: `'antigravity_secret_key_1337'`)
-  - `AUTH_SALT` — salt mixed with `APP_PASSWORD` to derive `AUTH_TOKEN` (hardcoded fallback: `'antigravity_default_salt_99'`)
-  - `NGROK_AUTHTOKEN` — ngrok auth token (read by `launcher.py`, not `server.js`)
-  - AI provider keys (`GROQ_API_KEY`, `GEMINI_API_KEY`) — placeholder entries in `.env.example`, not used by current server code
+- Configuration via `.env` file (not committed)
+- Key variables:
+  - `APP_PASSWORD` - Password for mobile interface access
+  - `NGROK_AUTHTOKEN` - ngrok tunnel authentication
+  - `PORT` - Server port (default 3000)
+  - `SESSION_SECRET` - Secure session secret
+  - `AUTH_SALT` - Salt for auth token hashing
+  - Optional: `xxx_API_KEY` - Placeholder for AI provider keys (Groq, Gemini, etc.)
 
-**SSL / TLS:**
-- Optional self-signed certificates at `certs/server.key` and `certs/server.cert`
-- Generated by `node generate_ssl.js` (tries OpenSSL including Git for Windows bundled version; falls back to Node.js `crypto`)
-- Server auto-detects cert presence at startup: switches `http.createServer` → `https.createServer`
-- `certs/` is gitignored; `registry/` is also gitignored
-
-**CDP Port Scan Range:**
-- `PORTS = [9000, 9001, 9002, 9003]` — hardcoded in `server.js`; targets must expose `--remote-debugging-port` on one of these
+**Build:**
+- No build process - files served directly
+- Entry point: `server.js`
+- Static files in `public/` directory
 
 ## Platform Requirements
 
 **Development:**
-- Node.js >=16.0.0
-- Python 3.x for `launcher.py`
-- Target app must run with `--remote-debugging-port=9000` (or 9001–9003)
-  - Antigravity: `antigravity . --remote-debugging-port=9000`
-  - Claude Code: VS Code extension with CDP exposed
-- Optional: OpenSSL (system or Git for Windows `C:\Program Files\Git\usr\bin\openssl.exe`) for SAN-capable certs
-- Windows: requires `netstat`, `taskkill` for port management
-- Linux/macOS: requires `lsof`, `kill`
+- Windows, macOS, or Linux
+- Node.js >= 16.0.0
+- npm package manager
+- Local browser with debugging protocol support (Chrome, Edge, Chromium-based)
 
 **Production:**
-- Runs on the developer's local desktop machine — this is NOT a cloud-deployed service
-- Internet access via ngrok tunnel; LAN access via direct IP
-- No containerization, CI/CD pipeline, or cloud hosting detected
+- Desktop application with Chrome/Chromium debugging port exposed (9000-9003)
+- ngrok or similar tunnel for public access (optional)
+- SSL certificates (optional, auto-generated via `generate_ssl.js`)
+
+## Key Technical Details
+
+**SSL/TLS Support:**
+- Optional HTTPS via self-signed certificates
+- Certificates stored in `certs/server.key` and `certs/server.cert`
+- Generated by `generate_ssl.js`
+- Falls back to HTTP if certificates missing
+
+**Authentication:**
+- Password-based with hashed token
+- Cookie-based sessions (30-day expiration)
+- Local network exemption (same Wi-Fi devices bypass auth)
+- Magic link auto-login via `?key=password` query parameter
+
+**Network:**
+- HTTP/HTTPS server on configurable port (default 3000)
+- WebSocket connections to CDP targets on ports 9000-9003
+- Local IP detection for direct network access
+- Supports ngrok tunneling for remote access
 
 ---
 

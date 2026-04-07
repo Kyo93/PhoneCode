@@ -2,227 +2,263 @@
 
 **Analysis Date:** 2026-04-07
 
----
+## Tech Debt
+
+**Silent Error Suppression in CDP Operations:**
+- Issue: Widespread empty catch blocks (`catch (e) { }`) throughout the codebase suppress errors without logging or alternative handling paths
+- Files: `server.js` (lines 57, 67, 112, 132, 183, 301, 335, 393, 446, 1048, 1116, 1142, 1167, 2080), `targets/antigravity.js`, `targets/claude.js`, `ui_inspector.js`, `discovery_claude.js`
+- Impact: Silent failures make debugging difficult. CDP calls that timeout or fail leave no trace in logs. DOM scraping failures go unreported. Message injection attempts silently fail and users never know why their input didn't register.
+- Fix approach: Replace empty catches with at minimum `console.error()` calls. For critical paths like `injectMessage` or `captureSnapshot`, return structured error objects with reasons so clients can show meaningful feedback.
+
+**DOM Selection Brittleness:**
+- Issue: Heavy reliance on complex CSS selectors, class name patterns, and semantic DOM structure that changes frequently. Multiple fallback strategies required in functions like `setMode`, `setModel`, `clickElement`, `remoteScroll`.
+- Files: `server.js` (lines 207-304, 451-550, 399-449, 340-396)
+- Impact: UI changes in Antigravity or Claude Code break element selection. Functions have 3-5 fallback strategies but still fail unpredictably. Chat history scraping via DOM selector `[class*="sessionItem"]` is fragile.
+- Fix approach: Migrate away from CSS class selectors toward `data-*` attributes or IDs where possible. Implement a validation layer that confirms element state before acting (e.g., verify button is visible and clickable before clicking). Cache element references instead of re-querying on every call.
+
+**Large Monolithic Server File:**
+- Issue: `server.js` is 2163 lines in a single file containing: port killing logic, network utilities, CDP connection management, screenshot capture logic, DOM manipulation expressions, 30+ Express endpoints, WebSocket handling, and auth middleware all mixed together
+- Files: `server.js` (entire file)
+- Impact: Difficult to understand data flow. Related concerns scattered across unrelated code sections. Testing individual functions requires loading the entire 2163-line module. Changes in one area risk affecting others.
+- Fix approach: Refactor into modular structure: `lib/cdp.js` (connection + call management), `lib/dom-operations.js` (all JavaScript expressions for DOM interactions), `routes/` (API endpoints grouped by concern), `middleware/` (auth, ngrok header), `utils/` (network utilities, hashing). Consider moving target-specific logic into `targets/` directory.
+
+**No Input Validation in DOM Expressions:**
+- Issue: User input (`textContent`, `selector`, `scrollTop`) is interpolated directly into JavaScript expressions that run in the browser context without sanitization
+- Files: `server.js` (lines 341-396 clickElement, 399-449 remoteScroll, 451-550 setModel, 207-304 setMode, 1980-1986 remote-click endpoint)
+- Impact: Malicious input could inject arbitrary JavaScript into the CDP Runtime.evaluate calls. Example: `selector = "'); alert('xss'); //"` would break the expression. Not a major risk since only authenticated users can call these, but violates defense-in-depth.
+- Fix approach: Sanitize/validate all user inputs before interpolating into expressions. Use parameterized approaches where possible. For selectors, validate against a whitelist of safe patterns. For textContent, escape special characters.
+
+**Memory Leak Risk: Pending CDP Calls:**
+- Issue: In `connectCDP` (lines 186-199), pending calls stored in `pendingCalls` Map are cleaned up via timeout, but if a timeout occurs, the entry is deleted. However, if CDP connection dies before response arrives and no timeout fires, orphaned entries remain.
+- Files: `server.js` (lines 154, 164-171, 186-199)
+- Impact: Long-lived applications making many CDP calls could accumulate orphaned entries in the Map over days/weeks. Each entry holds resolve/reject functions and context, preventing garbage collection.
+- Fix approach: Add maximum Map size check. Implement periodic cleanup every 5 minutes to remove stale entries (>10min old). Consider using a WeakMap if possible, or implement explicit cleanup on CDP disconnection.
+
+**Global State Mutation:**
+- Issue: Global variables `currentTarget`, `lastSnapshot`, `lastSnapshotHash`, `cdpConnections` are mutated by multiple async operations without proper synchronization. No locking mechanism.
+- Files: `server.js` (lines 35-38, 1330-1406, 1941-1958)
+- Impact: Race conditions possible when polling updates snapshots while client requests switch targets. Could result in inconsistent snapshots displayed to user or stale CDP connection references. If polling captures snapshot at same moment client switches target, client might see wrong target's snapshot.
+- Fix approach: Implement target-aware snapshot storage: `snapshots = { antigravity: {...}, claude: {...} }` instead of single `lastSnapshot`. Use locks or queues for target switching to ensure atomic operations.
 
 ## Known Bugs
 
-**Missing `/chat-status` endpoint:**
-- Symptoms: `public/js/app.js` calls `GET /chat-status` every 10 seconds (line 1006, inside `checkChatStatus()`), but no such route exists in the main `server.js`. Every call returns a 404. The `hasChatOpen()` function is defined at `server.js` line 989 but is never wired to an HTTP route.
-- Files: `server.js`, `public/js/app.js` line 1006
-- Impact: `chatIsOpen` state is never updated from the server; the "No Chat Open" empty state logic never triggers correctly via polling.
-- Fix approach: Add `app.get('/chat-status', ...)` to `server.js` calling `hasChatOpen(cdp)`. The correct implementation exists in `.claude/worktrees/agent-a3913218/server.js` at line 1342.
+**Chat History Scraping Fails Silently:**
+- Symptoms: `/chat-history` returns `error: 'No session items found in DOM'` when user opens history without expecting it, or returns empty array when chats definitely exist
+- Files: `server.js` (lines 1054-1119, 2021-2098)
+- Trigger: Happens when DOM scraping for session items finds nothing because elements haven't rendered yet, or class names changed. Fallback to FS works for Claude but not for Antigravity.
+- Workaround: Refresh the history panel, or switch targets and back. For Claude, history from `~/.claude/projects/` usually works.
 
-**`textPart.trim()` crashes on null in `/chat-history`:**
-- Symptoms: When reading Claude Code `.jsonl` history files, `textPart` can be null if the content array has no `type: 'text'` entry or if `parts` is neither a string nor an array. Calling `.trim()` on null throws `TypeError: Cannot read properties of null`, which is caught silently and the endpoint returns `{ error: e.message, chats: [] }`.
-- Files: `server.js` line 1855
-- Trigger: Any session where the first user message has no text part (image-only or tool-call-only messages).
-- Fix approach: Change `const t = textPart.trim()` to `const t = textPart?.trim() ?? ''`. The fix already exists in `.claude/worktrees/agent-a5078764/server.js` at line 1866 but has not been merged to main.
+**Remote Click IndexError on Nested Elements:**
+- Symptoms: `/remote-click` fails with "Element not found at index X among Y matches" even though element clearly visible
+- Files: `server.js` (lines 340-396, particularly 363-365 filtering nested elements)
+- Trigger: When multiple nested elements match the selector (parent and child both have same text), the filtering at line 363 removes the most specific one, leaving only outer containers which aren't directly clickable
+- Workaround: Manually click individual elements on phone UI instead of using remote click for complex nested thought blocks
 
-**`toggle-edit-auto` action is broken for Claude target:**
-- Symptoms: The "Edit Auto" button in the phone's Claude toolbar sends a CDP action but nothing changes in Claude Code. The selector in `targets/claude.js` looks for a button whose combined label/text contains both "edit" AND ("auto" OR "permit" OR "allow"), but the actual button uses different text.
-- Files: `targets/claude.js` lines 292-301 (`performAction`), lines 347-357 (`getToolbarState`)
-- Known issue: Tracked in `.planning/todos/pending/2026-04-05-fix-edit-auto-button-selector-in-claude-toolbar.md`
-- Fix approach: Visit `/ui-inspect` while Claude tab is active, find the button in `bestContextData.buttons`, capture its exact `ariaLabel`/`text`, update both selectors in `targets/claude.js`.
+**Stale Snapshot Hash Mismatch:**
+- Symptoms: Snapshot doesn't update on phone even though desktop clearly changed. Hash stays same for multiple polls.
+- Files: `server.js` (lines 1364-1369, 1381)
+- Trigger: `hashString()` uses simple bit-rotation algorithm (lines 1266-1274) which has collisions on similar HTML content. Two different snapshots can produce same hash, preventing updates
+- Workaround: Force refresh by clicking refresh button, which bypasses hash check and captures fresh snapshot
 
----
+**App State Detection Finds Wrong Model:**
+- Symptoms: Model shows "Claude" when it's actually "Gemini", or shows model name from chat content instead of selector UI
+- Files: `server.js` (lines 1172-1263)
+- Trigger: Logic searches for leaf text nodes containing model keywords but doesn't properly exclude chat content. Antigravity shows model inside chat history in status area, function finds that instead
+- Fix in place: Lines 1218 attempt to exclude chat content but logic is fragile
+
+**WebSocket Cookie Parsing Incomplete:**
+- Symptoms: Some browsers send cookies in different formats causing `/WebSocket` auth to fail even though user is logged in (HTTP auth works fine)
+- Files: `server.js` (lines 1867-1895)
+- Trigger: Cookie parsing at line 1871 naively splits on `;` but doesn't handle `Secure` or `HttpOnly` attributes properly. Also doesn't handle cookie names/values with special characters
+- Workaround: Reconnect the WebSocket or refresh page. HTTP requests work fine.
 
 ## Security Considerations
 
-**Hardcoded default secrets:**
-- Risk: Three secrets fall back to publicly-known default values if not set in `.env`:
-  - `APP_PASSWORD` defaults to `'antigravity'` (`server.js` line 28)
-  - `AUTH_SALT` defaults to `'antigravity_default_salt_99'` (`server.js` line 1269)
-  - `SESSION_SECRET` defaults to `'antigravity_secret_key_1337'` (`server.js` line 1276)
-- Files: `server.js` lines 28, 1269, 1276
-- Current mitigation: App is designed for local Wi-Fi use; local requests bypass auth entirely anyway.
-- Recommendations: Warn loudly at startup if any secret is still at its default value. Generate a random `AUTH_SALT` and `SESSION_SECRET` on first run if not set in `.env`.
+**Weak Default Password:**
+- Risk: Default `APP_PASSWORD` is hardcoded as `'antigravity'` (line 28, line 1441). If user deploys without changing `.env`, anyone on the network can access
+- Files: `server.js` (line 28, 1441), `.env.example` (line 4)
+- Current mitigation: Local Wi-Fi devices bypass auth entirely (lines 1459, 1887). Public ngrok URLs require password. But if ngrok URL leaks, weak password is easily brute-forced.
+- Recommendations: Generate strong random password on first startup if not provided. Require `.env` modification before server starts. Add rate limiting to `/login` endpoint. Implement account lockout after 3 failed attempts.
 
-**App password printed to stdout and captured in log file:**
-- Risk: At startup, `server.js` line 1910 prints `🔐 App Password: ${APP_PASSWORD}` to stdout. The start scripts (`start_ag_phone_connect.bat`) redirect stdout to `server_log.txt`. If the log is shared or accidentally read, the password is exposed in plaintext.
-- Files: `server.js` line 1910, `server_log.txt`
-- Current mitigation: `server_log.txt` is in `.gitignore`.
-- Recommendations: Replace log line with `🔐 App Password: [set in .env]` or mask with asterisks.
+**Auth Token Predictability:**
+- Risk: `AUTH_TOKEN` (line 31, 1435) is derived via `hashString(APP_PASSWORD + authSalt)`. If authSalt is the default `'antigravity_default_salt_99'`, token is easily reproducible. Custom salt helps but still relies on password entropy.
+- Files: `server.js` (lines 31, 434, 1435)
+- Current mitigation: Salt from `AUTH_SALT` env var (line 1434)
+- Recommendations: Use cryptographic hash (SHA256) instead of simple bit-rotation for token generation. Consider using built-in Node.js `crypto.createHash()`.
 
-**Magic link passes raw password as URL query parameter:**
-- Risk: `server.js` line 1299 checks `req.query.key === APP_PASSWORD` to auto-login via QR code. The plaintext password appears in browser history, server access logs, ngrok dashboard request inspector, and any reverse proxy logs.
-- Files: `server.js` lines 1299-1307
-- Current mitigation: None.
-- Recommendations: Use a time-limited HMAC token (e.g., `crypto.createHmac('sha256', SESSION_SECRET).update(Date.now().toString()).digest('hex')`) instead of the raw password for the magic link parameter. Invalidate after first use or after 5 minutes.
+**Plaintext Credentials in Optional Fields:**
+- Risk: `.env` file can contain API keys for AI providers (line 12 in `.env.example`). While `.env` should be in `.gitignore` (which it is per `.gitignore`), it's still readable by any local user on shared systems
+- Files: `.env.example` (line 12)
+- Current mitigation: `.env` is in `.gitignore` so not committed. Permissions depend on OS file permissions.
+- Recommendations: Warn users not to share `.env` with API keys. Require them to understand risk. Consider supporting environment variable-only mode without `.env` file option for sensitive deployments.
 
-**No brute-force protection on `/login`:**
-- Risk: `app.post('/login')` at `server.js` line 1325 has no rate limiting, lockout, or delay. Any device can attempt unlimited password guesses.
-- Files: `server.js` lines 1325-1337
-- Current mitigation: Local network only in typical usage.
-- Recommendations: Add `express-rate-limit` on the `/login` route; enforce a delay or lockout after 5 failed attempts per IP.
+**No Rate Limiting on CDP Endpoints:**
+- Risk: Endpoints like `/set-mode`, `/set-model`, `/remote-click` have no rate limiting. Attacker could flood with requests causing DoS to desktop app via CDP spam or exhausting WebSocket resources
+- Files: `server.js` (lines 1605-1629, 1980-1995, 2010)
+- Current mitigation: Local network restriction helps, but authenticated remote users face no limits
+- Recommendations: Implement rate limiter middleware (e.g., `express-rate-limit`). Limit to 10 requests/second per IP, or 1 request per 100ms for mode/model changes.
 
-**Auth bypass for entire local network:**
-- Risk: `isLocalRequest()` at `server.js` lines 1112-1133 allows any device with a `192.168.*`, `10.*`, or `172.16-31.*` IP to call all API endpoints without authentication. On a shared or public Wi-Fi network (café, office, hotel), any connected device can read chat history, inject messages, and execute CDP actions.
-- Files: `server.js` lines 1112-1133, 1294
-- Current mitigation: Intentional design for "same Wi-Fi" convenience.
-- Recommendations: Add a `REQUIRE_AUTH_LOCAL=true` env var that disables the bypass. Document the risk clearly in README for users who run the server on untrusted networks.
-
-**Weak AUTH_TOKEN generation (non-cryptographic hash):**
-- Risk: `hashString()` at `server.js` lines 1101-1109 is a djb2 bit-shift variant. It has known collision patterns and is not suitable for security tokens. The token derived from it (`AUTH_TOKEN`) is used as a session cookie value. Collisions are theoretically exploitable.
-- Files: `server.js` lines 1101-1109, 1270
-- Current mitigation: Local-use app; attacker would need to be on the same network.
-- Recommendations: Replace with `crypto.createHmac('sha256', sessionSecret).update(APP_PASSWORD + authSalt).digest('hex')`.
-
-**Raw HTML from CDP snapshot injected into phone DOM:**
-- Risk: `chatContent.innerHTML = data.html` at `public/js/app.js` line 481 sets the phone chat area to HTML captured from the desktop AI app via CDP's `cloneNode`. If the AI app displayed content containing inline event handlers (`onclick`, `onmouseover`, etc.), they execute in the phone browser's context.
-- Files: `public/js/app.js` line 481
-- Current mitigation: Scripts within `<script>` tags do not execute when set via `innerHTML`, but inline event handlers do.
-- Recommendations: Sanitize the captured HTML with DOMPurify before setting innerHTML, or render it inside a sandboxed iframe.
-
-**XSS via chat title in history card onclick handler:**
-- Risk: `public/js/app.js` lines 929-935 builds `safeTitle` by escaping only `"` and `'`, then interpolates it into a string `onclick` attribute: `onclick="hideChatHistory(); selectChat('${safeTitle}');"`. Characters like backticks, parentheses, semicolons, and JS keywords in a chat title are not escaped and can execute arbitrary code when the card is clicked.
-- Files: `public/js/app.js` lines 929-935
-- Current mitigation: Chat titles come from sessions the user created (self-XSS), but the Claude JSONL reader uses the first user message as the title — a chat initiated with a malicious payload would be exploitable.
-- Recommendations: Remove string-template onclick entirely; use `element.addEventListener('click', ...)` with the title stored in a `data-*` attribute after the HTML is rendered.
-
-**Debug and SSL generation endpoints accessible to all authenticated sessions:**
-- Risk: `POST /generate-ssl` at `server.js` line 1381 executes `execSync('node generate_ssl.js', ...)`. `GET /debug-ui`, `GET /ui-inspect`, and `GET /cdp-targets` expose full DOM trees, CDP frame hierarchies, and WebSocket debugger URLs.
-- Files: `server.js` lines 1381-1395, 1398-1406, 1461-1654, 1657-1668
-- Current mitigation: Protected by cookie auth (bypassed for local network).
-- Recommendations: Gate these behind a `DEBUG_MODE=true` env var that is off by default in production.
-
----
-
-## Tech Debt
-
-**`server.js` is a 1939-line monolith:**
-- Issue: All logic is in one file: CDP connection management, 10+ DOM automation scripts as template-string JS, HTTP routing, auth middleware, SSL handling, chat history filesystem parsing, and startup. Each CDP action function is 30-100 lines of inline JavaScript strings.
-- Files: `server.js`
-- Impact: Hard to navigate and test. Adding a third target requires editing this file in many locations.
-- Fix approach: Extract CDP action scripts into their respective target files (`targets/antigravity.js`, `targets/claude.js`). Extract auth and server setup into separate modules.
-
-**~35 silent empty catch blocks:**
-- Issue: `server.js` has approximately 35 `catch (e) { }` blocks that swallow all errors silently. CDP call failures, WebSocket errors, and DOM script exceptions disappear without a trace.
-- Files: `server.js` lines 183, 301, 335, 393, 446, 587, 654, 957, 983, 1008, 1095, and 20+ more
-- Impact: Production failures are invisible. The recent series of revert commits in git history (5 reverts in a row) is likely a symptom of this — broken behavior is hard to reproduce without logs.
-- Fix approach: At minimum, add `console.warn('[functionName] error:', e.message)` to every catch block. The `agent-af620e4e` worktree already has this applied throughout.
-
-**`document.execCommand` is deprecated:**
-- Issue: Both `targets/claude.js` line 168 and `targets/antigravity.js` line 214 use `document.execCommand?.('insertText', ...)` as the primary text-injection method. This API was deprecated in 2016 and is removed from the HTML spec; it works today only due to Chromium/Electron legacy compatibility.
-- Files: `targets/claude.js` line 168, `targets/antigravity.js` line 214
-- Impact: Will break silently when Electron or VS Code updates Chromium past the removal threshold.
-- Fix approach: Use `InputEvent` with `inputType: 'insertText'` and `DataTransfer` directly, or the `insertReplacementText` inputType. The fallback already exists; the execCommand call should become the fallback rather than the primary.
-
-**Hardcoded model list in frontend:**
-- Issue: `public/js/app.js` lines 379-386 contains a hardcoded list of AI model display names. These must be updated manually whenever the actual Antigravity models change.
-- Files: `public/js/app.js` lines 379-386
-- Fix approach: Add a `/models` endpoint that reads available models from the connected app's UI via CDP, or move the list to a server-side config file.
-
-**`package-lock.json` is gitignored:**
-- Issue: `.gitignore` line 2 excludes `package-lock.json`. Builds are non-deterministic: `npm install` can resolve different patch versions of transitive dependencies on each machine.
-- Files: `.gitignore` line 2
-- Impact: Cannot run `npm audit` consistently across environments. Security patches in transitive deps may silently not apply.
-- Fix approach: Remove `package-lock.json` from `.gitignore` and commit it.
-
-**Additional multi-target endpoints registered inside `main()` instead of `createServer()`:**
-- Issue: Routes `/targets`, `/switch-target`, `/claude/action`, `/claude/toolbar-state`, `/remote-click`, `/remote-scroll`, `/app-state`, `/new-chat`, `/chat-history`, `/select-chat`, and `/close-history` are registered inside the `main()` try-catch block at `server.js` lines 1737-1901, not alongside the other routes in `createServer()`. Route registration is split across two separate locations.
-- Files: `server.js` lines 1737-1901
-- Fix approach: Move all `app.get`/`app.post` calls into `createServer()` for a single authoritative list of endpoints.
-
-**Global state stored on `window` object:**
-- Issue: `public/js/app.js` line 299 uses `window.lastTarget = data.current` to track last known target. Application state on the global `window` is an anti-pattern.
-- Files: `public/js/app.js` line 299
-- Fix approach: Move to a module-level `let lastTarget` variable alongside the other state declarations at the top of the file.
-
----
-
-## Fragile Areas
-
-**CSS cursor-style heuristic for clickable element discovery:**
-- Files: `server.js` DOM scripts inside `setMode()` (line 219), `setModel()` (line 452), `startNewChat()` (line 593), `getChatHistory()` (line 659), `selectChat()` (line 844), `getAppState()` (line 1013)
-- Why fragile: All click-target discovery walks up to 4-5 DOM ancestor levels checking `window.getComputedStyle(el).cursor === 'pointer'`. Any CSS framework update (Tailwind version bump, class rename) that changes hover cursor behavior breaks all of these silently, returning a vague `{ error: 'button not found' }` with no diagnostic info.
-- Safe modification: Always prefer the Priority-1 selectors (`[data-tooltip-id=...]`, `aria-label`) over the heuristic traversal. Log which fallback branch was used when a match succeeds.
-- Test coverage: None.
-
-**CDP context iteration fires on wrong frames:**
-- Files: `server.js`, `targets/antigravity.js`, `targets/claude.js`
-- Why fragile: Every CDP operation loops through all execution contexts and returns the first success. A service worker, extension background page, or hidden iframe context could respond first and silently succeed in the wrong scope. `targets/claude.js` partially mitigates this by trying without `contextId` first, but the core issue is unresolved.
-- Safe modification: Log which `contextId` returned a successful result when adding new CDP actions.
-- Test coverage: None.
-
-**`killPortProcess()` parses shell command text output:**
-- Files: `server.js` lines 41-76
-- Why fragile: Parses raw text output of `netstat -ano` on Windows. Output format varies by locale, OS version, and whether running inside WSL or Docker. A parse failure silently returns a resolved Promise (no kill attempted), and the server then fails with `EADDRINUSE`.
-- Safe modification: Consider wrapping the listen call in a try/catch for `EADDRINUSE` and retrying on the next port instead of pre-emptively killing processes.
-
-**Self-signed SSL certificate expires after 365 days:**
-- Files: `generate_ssl.js` lines 122-123, `certs/server.cert` (on disk, gitignored)
-- Why fragile: Certificate generated with `-days 365`. When it expires, all HTTPS connections fail and the phone UI shows a certificate error with no automatic renewal. There is no expiry warning in the server startup log.
-- Safe modification: Add a startup check that reads `certs/server.cert` and logs a warning if it expires within 30 days. Consider using a longer validity (e.g., 3650 days) for development certs.
-
----
+**Ngrok Authorization Token in Plaintext:**
+- Risk: `NGROK_AUTHTOKEN` in `.env` (line 9 in `.env.example`) is sensitive. If `.env` leaks (backup, screen capture, etc.), attacker can use token to create tunnels on the user's ngrok account
+- Files: `.env.example` (line 9)
+- Current mitigation: None beyond standard `.env` protection
+- Recommendations: Document risk in README. Advise users to rotate tokens regularly. Consider supporting ngrok API key in memory only, not persisted in `.env`.
 
 ## Performance Bottlenecks
 
-**Full DOM snapshot every 1 second, broadcast on any change:**
-- Problem: `startPolling()` in `server.js` calls `captureSnapshot()` every 1000ms. Each snapshot clones the full chat DOM, serializes all CSS stylesheet rules, and base64-encodes local images. For large chats this can produce 100KB–2MB per poll. On any hash change, all connected clients are notified and each independently fetches the full snapshot via a separate HTTP GET.
-- Files: `server.js` lines 1166-1241
-- Cause: No diffing; polling over-triggers even for minor streaming updates.
-- Improvement path: Embed snapshot data directly in the WebSocket `snapshot_update` message to eliminate the second fetch. Increase poll interval to 2s when content is stable for >10s.
+**Snapshot Capture DOM Cloning:**
+- Problem: Every poll (1 second interval, line 26) clones entire DOM with `cascade.cloneNode(true)` (lines 56, 48 in targets). For Claude Code with large VS Code interface, this clones thousands of nodes every second.
+- Files: `server.js` (line 26 POLL_INTERVAL), `targets/claude.js` (line 48), `targets/antigravity.js` (line 56)
+- Cause: Full HTML + CSS extraction needed for mobile display, but cloning entire DOM tree is expensive. Image conversion to base64 adds more latency.
+- Improvement path: Implement incremental snapshots - only re-capture changed regions. Use shadow DOM APIs to avoid cloning hidden subtrees. Compress images before base64 conversion. Consider caching CSS across polls since it rarely changes.
 
-**CSS change detection uses length + 64-byte prefix:**
-- Problem: `public/js/app.js` line 470 checks `data.css.length + ':' + data.css.slice(0, 64)`. Changes that only affect the end of a large stylesheet are not detected; changes that only affect the first 64 bytes of a same-length stylesheet trigger a false-negative.
-- Files: `public/js/app.js` line 470
-- Improvement path: Apply the same `hashString()` already used for snapshot diffing on the server side to the CSS string.
+**Image Conversion Loop:**
+- Problem: Every snapshot converts all local images to base64 via `fetch()` + `FileReader()` (lines 69-84 in claude.js, 102-117 in antigravity.js). For 50 images = 50 sequential fetch+convert operations adding 5-10 seconds per snapshot.
+- Files: `targets/claude.js` (lines 69-84), `targets/antigravity.js` (lines 102-117)
+- Cause: Sequential Promise.all() on individual image conversions is slow. No caching or size limits.
+- Improvement path: Parallelize with Promise.all() but limit to 5 concurrent. Cache base64 images by URL. Skip converting images larger than 1MB. Consider serving images from a temporary cache instead of embedding in every snapshot.
 
-**`/chat-history` reads all `.jsonl` files synchronously:**
-- Problem: `server.js` lines 1826-1875 uses `fs.readdirSync` and `fs.readFileSync` to iterate every project directory and session file under `~/.claude/projects/` synchronously, blocking the Node.js event loop.
-- Files: `server.js` lines 1819-1875
-- Cause: No async I/O, no caching, no pagination.
-- Improvement path: Rewrite with `fs.promises.readdir` / `fs.promises.readFile` and `Promise.all()`. Cache results and only re-read files whose `mtime` has changed since the last request.
+**CSS Rule Collection is Unfiltered:**
+- Problem: Collects ALL CSS rules from all stylesheets without filtering (lines 89-103 in claude.js, 149-165 in antigravity.js). For complex applications, this is thousands of rules totaling 100KB+. All sent in every snapshot.
+- Files: `targets/claude.js` (lines 89-103), `targets/antigravity.js` (lines 149-165)
+- Cause: Simple loop collects everything then applies broad regexes (replace fixed/absolute/100vh). No deduplication or filtering of unused rules.
+- Improvement path: Filter CSS rules to only those matching elements in snapshot. Deduplicate rules. Strip unused selectors. Minify CSS output. Cache rule set across polls.
 
----
+**Hash Collision Causes False Negatives:**
+- Problem: Simple `hashString()` (lines 1266-1274) produces collisions. Content hash calculation is quick but cheap, leading to missed snapshot updates.
+- Files: `server.js` (lines 1266-1274, 1364)
+- Cause: 32-bit rolling hash used, not cryptographic. Similar content produces same hash frequently.
+- Improvement path: Use CRC32 or SHA256 for robust hashing. Or compare HTML length + first 100 chars instead of hash.
 
-## Test Coverage Gaps
+**WebSocket Broadcast Without Filtering:**
+- Problem: Every poll sends broadcast to ALL connected clients (line 1372-1379) even if they're on different targets. Client then must fetch entire snapshot.
+- Files: `server.js` (lines 1372-1379)
+- Cause: Single global `wss` object broadcasts to all clients. No client metadata tracking which target they're viewing.
+- Improvement path: Track client target preference. Send updates only to clients viewing that target. Or include target ID in broadcast so clients ignore irrelevant updates.
 
-**No test suite exists:**
-- What's not tested: All server endpoints, CDP action functions, auth logic, WebSocket auth, snapshot hashing, chat history parsing, port cleanup.
-- Files: All of `server.js`, `targets/claude.js`, `targets/antigravity.js`, `public/js/app.js`
-- Risk: Any refactoring silently breaks functionality. The git log shows 5 consecutive revert commits on the `dev` branch, suggesting regressions are currently caught only by manual testing.
-- Priority: High
+## Fragile Areas
 
-**CDP DOM injection scripts cannot be unit-tested:**
-- What's not tested: The JavaScript strings injected via `Runtime.evaluate` in all CDP action functions. They are plain template-literal strings embedded inside server.js — no way to import or mock them.
-- Files: `server.js` lines 211-303, 308-338, 344-396, etc.; `targets/claude.js`; `targets/antigravity.js`
-- Risk: Selector changes in Antigravity or Claude Code UI break actions with no automated detection.
-- Priority: High
+**DOM Structure Dependency for Message Injection:**
+- Files: `targets/claude.js` (lines 142-250), `targets/antigravity.js` (corresponding lines)
+- Why fragile: Injection looks for `[contenteditable]` or `[contenteditable="plaintext-only"]` elements, then types text character by character or uses clipboard fallback. If Claude changes editor implementation or Antigravity refactors input area, injection breaks completely.
+- Safe modification: Add fallback strategies that try multiple approaches. Log which method succeeded so developers can track breakage. Add retry logic with exponential backoff. Consider adding JS listener on input element to detect when injection succeeds vs. fails.
+- Test coverage: No dedicated tests for `injectMessage`. Should add integration tests against real instances of Antigravity/Claude Code.
 
-**Auth edge cases untested:**
-- What's not tested: IPv6-mapped addresses bypassing `isLocalRequest()`, signed cookie verification, concurrent session handling, magic link token flow.
-- Files: `server.js` lines 1112-1133, 1287-1320, 1671-1706
-- Priority: Medium
+**CDP Context Management:**
+- Files: `server.js` (lines 154-205)
+- Why fragile: Code assumes contexts list is stable, but contexts can be created/destroyed at runtime. `Runtime.executionContextDestroyed` is handled (line 176-179) but timing is tight. If context is destroyed between getting context list and executing expression, error occurs.
+- Safe modification: Wrap all Runtime.evaluate calls in try-catch (already partially done). Add context validation before execute. If context fails, retry with different context.
+- Test coverage: No tests for context lifecycle.
 
----
+**Authentication Middleware Order:**
+- Files: `server.js` (lines 1444-1485)
+- Why fragile: Public paths are hardcoded list (line 1453). If new public endpoint is added, must update this list, easy to forget. Auth cookie verification mixes signed cookies and unsigned. WebSocket auth uses separate logic than HTTP auth.
+- Safe modification: Use decorator pattern or explicit auth() middleware for protected routes instead of blacklist. Consolidate auth logic into single function used by both HTTP and WebSocket. Document all public endpoints clearly.
+- Test coverage: Auth logic not tested.
+
+**Target Switching State Consistency:**
+- Files: `server.js` (lines 1941-1958)
+- Why fragile: `currentTarget` is changed (line 1948) but polling loop may still be reading old value while capture is in progress. Snapshot and state could mismatch.
+- Safe modification: Implement atomic target switching with state snapshot. Serialize target changes. Clear in-flight operations before switching.
+- Test coverage: No tests for concurrent target switching.
 
 ## Scaling Limits
 
-**Single shared `currentTarget` global affects all connected clients:**
-- Current capacity: One active target at a time, selected server-wide. All phone clients see the same target.
-- Limit: If two users connect simultaneously, switching targets on one user's device switches it for all users.
-- Scaling path: Move `currentTarget` to per-session state keyed by WebSocket connection or cookie session.
+**Single Port Polling:**
+- Current capacity: 2 CDP connections (lines 20, PORTS array) to ports 9000-9003, but only checks these 4 ports
+- Limit: Can only monitor 2 targets (Antigravity + Claude Code). Adding 3rd target requires modifying PORTS array and regenerating logic
+- Scaling path: Make PORTS configurable via env var. Support dynamic port discovery via CDP broadcast. Implement service discovery instead of hardcoded ports.
 
-**No WebSocket client connection limit:**
-- Current capacity: Unlimited concurrent WebSocket connections.
-- Limit: Each connection receives broadcast notifications and triggers a full HTTP snapshot fetch. Memory grows linearly with connected clients.
-- Scaling path: Add a `wss.clients.size > MAX_CLIENTS` check on connection and reject with a JSON error message.
+**WebSocket Connection Limit:**
+- Current capacity: No explicit limit on concurrent WebSocket clients. Node.js default is ~10,000 sockets per process.
+- Limit: Heavy snapshot broadcasts to all clients will saturate bandwidth. With 10KB snapshots and 1-second poll interval, 100 clients = 1MB/s sustained traffic.
+- Scaling path: Implement client throttling. Allow clients to specify update frequency. Compress snapshots (gzip). Implement snapshot diffing so only changes are sent. Partition clients into groups, broadcast to groups.
 
----
+**Memory Growth from Snapshots:**
+- Current capacity: `lastSnapshot` stored in memory (lines 37, 1369). Each snapshot is 50KB-200KB depending on content.
+- Limit: Long-running server accumulates snapshots. With high update rate (1s intervals), memory could grow if historical snapshots kept.
+- Scaling path: Currently only keeps last snapshot (good), but if snapshots added to history, implement bounded circular buffer. Implement snapshot garbage collection. Move old snapshots to disk.
+
+**Screenshot HTML Size:**
+- Current capacity: Snapshot HTML size is 500KB-2MB for complex layouts (server_log shows active capture)
+- Limit: Sending 2MB HTML every 1-2 seconds to mobile client over mobile data uses 30-50MB/hour
+- Scaling path: Implement compression before sending. Minify HTML. Strip unnecessary attributes. Cache and diff snapshots. Consider vector format for UI rendering instead of HTML.
 
 ## Dependencies at Risk
 
-**`express` 4.x with no upgrade plan:**
-- Risk: Express 5.x is released with breaking API changes. Express 4.18.x receives security patches but at lower priority. `express` 4.18.2 was released in 2022 — it is 3+ years old.
-- Impact: Security patches may be delayed; async error handling requires manual next(err) in Express 4 which is easy to miss.
-- Migration plan: Evaluate Express 5 compatibility when the next server refactor occurs.
+**ws (WebSocket Library) - v8.18.0:**
+- Risk: Library maintained but infrequently updated. No security issues reported recently, but long-lived WebSocket connections should be monitored for frame corruption or protocol handling bugs
+- Impact: WebSocket auth, client communication depends on ws library. Bug in ws could affect all remote connections
+- Migration plan: If ws becomes unmaintained, migrate to `socket.io` which has more active ecosystem, or Node.js native WebSocket support when available (Node.js 21+)
 
-**`package-lock.json` gitignored means no auditable dependency tree:**
-- Risk: `npm audit` results differ between machines. Transitive dependency security patches are not guaranteed to apply on reinstall.
-- Files: `.gitignore` line 2
-- Migration plan: Remove from `.gitignore`, commit the lockfile, run `npm audit` as part of development workflow.
+**dotenv - v16.4.7:**
+- Risk: Popular and maintained, but loads `.env` into process.env without validation. Malformed `.env` could cause unexpected behavior
+- Impact: Configuration loading depends on dotenv
+- Migration plan: No immediate risk, but consider validating env vars against schema on startup using something like `joi`
+
+**express - v4.18.2:**
+- Risk: Widely maintained, recent versions, but somewhat monolithic for simple server. No immediate risk.
+- Impact: Core framework
+- Migration plan: Fine as-is
+
+## Missing Critical Features
+
+**No Persistent Session Storage:**
+- Problem: Auth tokens are cookies only, no server-side session store. If server restarts, all clients must re-authenticate (though many browsers cache cookies).
+- Blocks: Desktop/mobile sync where client must maintain state across restarts
+- Workaround: None - just reconnect
+
+**No Snapshot History:**
+- Problem: Only last snapshot stored (line 37 `lastSnapshot`). No ability to review past UI state or debug what happened 2 minutes ago
+- Blocks: Debugging complex interaction sequences, auditing
+- Workaround: None - screenshots must be taken manually
+
+**No Error Reporting Dashboard:**
+- Problem: Errors are logged to console only. Mobile user has no visibility into server errors or why operations fail
+- Blocks: Debugging failed interactions from mobile
+- Workaround: Check server console terminal, reconnect
+
+**No Test Suite:**
+- Problem: No test files found. Cannot verify changes don't break existing functionality
+- Blocks: Refactoring, new feature development
+- Workaround: Manual testing only
+
+**No API Documentation:**
+- Problem: 30+ endpoints with no OpenAPI/Swagger spec or documented request/response formats
+- Blocks: Integration with other tools, third-party clients
+- Workaround: Read server.js directly
+
+## Test Coverage Gaps
+
+**No Auth Testing:**
+- What's not tested: Login endpoint, cookie verification, local Wi-Fi bypass, WebSocket auth, signed cookie handling
+- Files: `server.js` (lines 1451-1508, 1867-1902)
+- Risk: Auth bypass or lock-out bugs will only be discovered in production
+- Priority: High
+
+**No CDP Connection Testing:**
+- What's not tested: Connection establishment, reconnection after failure, context lifecycle, pending call cleanup, timeouts
+- Files: `server.js` (lines 145-205, 1301-1328, 1330-1406)
+- Risk: Connection losses or leaks not discovered until heavy production load
+- Priority: High
+
+**No Message Injection Testing:**
+- What's not tested: Actual message sending to Antigravity or Claude Code, character-by-character typing, clipboard fallback, non-ASCII characters, error handling for missing input element
+- Files: `targets/claude.js` (lines 142-250), `targets/antigravity.js` (corresponding)
+- Risk: Message injection could silently fail in production with no user feedback
+- Priority: High
+
+**No DOM Scraping Testing:**
+- What's not tested: Session/chat history scraping, element finding, nested element filtering, fallback to filesystem
+- Files: `server.js` (lines 956-1119, 2020-2098)
+- Risk: History features break silently when UI structure changes
+- Priority: Medium
+
+**No Snapshot Capture Testing:**
+- What's not tested: Full snapshot flow including DOM cloning, image conversion, CSS extraction, hash computation
+- Files: `targets/claude.js` (lines 33-137), `targets/antigravity.js` (lines 36-175)
+- Risk: Snapshot corruption or missing content not caught until user complains
+- Priority: Medium
 
 ---
 

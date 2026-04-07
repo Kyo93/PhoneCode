@@ -4,194 +4,188 @@
 
 ## Pattern Overview
 
-**Overall:** CDP Bridge + REST/WebSocket Proxy ("Wireless Viewport")
-
-This system is not a browser extension or standalone client. It bridges a running desktop AI tool's live DOM to a mobile browser by:
-1. Connecting to the desktop tool's Chrome DevTools Protocol (CDP) endpoint over WebSocket
-2. Executing JavaScript inside the tool's renderer process to capture DOM snapshots and perform actions
-3. Serving captured snapshots to a mobile web client over HTTP/WebSocket
-4. Relaying mobile user interactions back to the desktop tool via more CDP JS injection
+**Overall:** Real-time remote UI monitoring and interaction hub with multi-target support
 
 **Key Characteristics:**
-- No modification to the desktop AI tool — uses CDP remote debugging, which tools expose via `--remote-debugging-port`
-- 1-second polling interval; WebSocket used only for push notifications (not payload delivery — snapshots always fetched via HTTP GET)
-- Plugin-style multi-target design: `targets/` directory contains one module per supported desktop tool
-- Authentication is bypassed entirely for same-LAN clients; signed-cookie auth for remote (ngrok) access
-- No frontend build pipeline — mobile SPA is plain HTML/CSS/JS served directly
+- Client-server model with Express backend and vanilla JS frontend
+- CDP (Chrome DevTools Protocol) as the control plane for remote browser interaction
+- Multi-target architecture supporting Antigravity and Claude Code extensions
+- Snapshot-based UI rendering streamed from remote targets
+- WebSocket for real-time push updates of UI state changes
 
 ## Layers
 
+**Server (Backend):**
+- Purpose: Express HTTP/HTTPS server with WebSocket support
+- Location: `server.js`
+- Contains: Route handlers, CDP connection management, target switching logic, authentication
+- Depends on: Express, `ws` library, CDP endpoints via HTTP
+- Used by: Mobile web client via HTTP/WebSocket
+
 **Target Adapter Layer:**
-- Purpose: Encapsulates all DOM knowledge about a specific AI tool — how to find it via CDP, how to capture its UI, how to inject messages and clicks
+- Purpose: Abstraction for different target applications (Antigravity, Claude Code)
 - Location: `targets/antigravity.js`, `targets/claude.js`
-- Exports: `discover(list)`, `captureSnapshot(cdp)`, `injectMessage(cdp, text)`. Claude additionally exports `performAction(cdp, action)`, `getToolbarState(cdp)`
-- Depends on: CDP connection object (`cdp.call`, `cdp.contexts`)
-- Used by: `server.js` via `const TARGETS = { antigravity, claude }` registry and direct `claude.*` calls for Claude-specific endpoints
+- Contains: Discovery logic, snapshot capture strategies, interaction methods
+- Depends on: CDP connection objects
+- Used by: Server route handlers for target-specific operations
 
-**CDP Bridge Layer:**
-- Purpose: Manages WebSocket connections to desktop tool DevTools endpoints; tracks execution contexts; routes `Runtime.evaluate` calls
-- Location: `server.js` — `discoverCDP()`, `connectCDP()`, `initCDP()` (~lines 119–205, 1136–1163)
-- Contains: `cdpConnections` Map (target key → `{port, url, ws, call, contexts}`), context lifecycle tracking via `Runtime.executionContextCreated/Destroyed` events, 30s call timeout via `pendingCalls` Map
-- Depends on: `ws` npm package
-- Used by: Polling loop, all HTTP route handlers
+**Client (Frontend):**
+- Purpose: Mobile web interface for viewing and controlling remote UI
+- Location: `public/js/app.js`
+- Contains: UI state management, WebSocket handling, snapshot rendering, user interactions
+- Depends on: HTML (index.html), CSS (style.css), Express API endpoints
+- Used by: Users accessing web interface on mobile/desktop
 
-**Polling Loop:**
-- Purpose: Continuously captures snapshots from the active target and broadcasts change notifications
-- Location: `server.js` `startPolling()` (~line 1166)
-- Contains: 1s `setTimeout` loop, `hashString()` change detection, WebSocket broadcast of `{ type: 'snapshot_update' }`
-- Depends on: CDP bridge layer, active target's `captureSnapshot()`
-- Used by: Started once in `main()` after server starts; auto-reconnects on CDP loss (retries every 2s)
-
-**HTTP/WebSocket Server Layer:**
-- Purpose: Exposes REST endpoints for mobile client actions, serves static UI files, manages authenticated WebSocket connections
-- Location: `server.js` `createServer()` (~line 1244) and endpoints registered in `main()` (~line 1734+)
-- Contains: Express app, ~20 REST routes, WebSocket server, authentication middleware, SSL detection, compression, ngrok header bypass
-- Depends on: express, ws, cookie-parser, compression, CDP bridge layer, target adapters
-- Used by: Mobile web client
-
-**Mobile UI Layer:**
-- Purpose: Renders AI tool UI snapshots on a phone; relays user interactions back to the server
-- Location: `public/index.html`, `public/js/app.js`, `public/css/style.css`
-- Contains: WebSocket client, snapshot renderer, static dark-mode CSS injected once at startup, dynamic CSS from snapshots, action handlers (send, stop, mode, model, history, scroll sync, remote click)
-- Depends on: Server REST API + WebSocket
-- Used by: Mobile browser directly
+**Static Assets:**
+- Purpose: UI markup and styling
+- Location: `public/index.html`, `public/css/style.css`
+- Contains: Layout structure, responsive design, modal dialogs
+- Depends on: CSS stylesheet
+- Used by: Browser to render the interface shell
 
 ## Data Flow
 
-**Snapshot Capture and Display:**
+**Snapshot Capture and Update Cycle:**
 
-1. `startPolling()` fires every 1000ms via `setTimeout`
-2. Calls `TARGETS[currentTarget].captureSnapshot(cdp)` — iterates `cdp.contexts`, runs `Runtime.evaluate` with a JS string in each context until one succeeds
-3. JS runs inside the desktop tool's renderer process: clones the chat container DOM, strips interaction areas and `position:fixed` rules, converts `vscode-file://` image paths to base64, extracts all CSS rules
-4. Returns `{ html, css, scrollInfo, stats }` over the CDP WebSocket back to the server
-5. Server computes `hashString(snapshot.html)`; if hash changed, stores snapshot in module-level `lastSnapshot` and broadcasts `{ type: 'snapshot_update', timestamp }` to all connected WebSocket clients
-6. Mobile client receives WS notification, calls `fetchWithAuth('/snapshot')` via HTTP GET
-7. Mobile injects `data.css` into `<style id="cdp-dynamic-styles">` (only if CSS content hash changed, to avoid layout recalc)
-8. Mobile sets `chatContent.innerHTML = data.html` to render the snapshot; adds mobile copy buttons to `<pre>` blocks
+1. Server discovers CDP targets on startup via `discoverCDP()` (checks ports 9000-9003)
+2. Server connects to target via `connectCDP()` and maintains WebSocket connection to target's browser
+3. Poll interval (every 1 second) calls `TARGETS[currentTarget].captureSnapshot(cdp)`
+4. Snapshot function executes JavaScript in remote browser context to:
+   - Clone the DOM (#conversation, #chat, #cascade containers for Antigravity; document.body for Claude)
+   - Extract inline styles from document.styleSheets
+   - Convert local images to base64 data URLs
+   - Strip interaction elements (input areas, file panels)
+   - Normalize positioning styles for mobile scrolling
+5. Server hashes snapshot HTML to detect changes; only broadcasts if hash differs
+6. WebSocket pushes `{ type: 'snapshot_update' }` to connected clients
+7. Client receives update, fetches `/snapshot` endpoint, replaces `chatContent` innerHTML
+8. Client injects dynamic CSS and mobile copy buttons
 
-**User Message Send:**
+**State Synchronization:**
 
-1. User types in `#messageInput`, taps Send
-2. `app.js` `sendMessage()` POSTs `{ message }` to `/send`
-3. Server calls `TARGETS[currentTarget].injectMessage(cdp, message)`
-4. CDP JS in desktop renderer: finds `contenteditable` editor, inserts text via `execCommand('insertText')` or `textContent` fallback, locates and clicks the submit button (multi-strategy: aria-label → SVG icon → rightmost candidate)
-5. Server returns `{ success, method, details }` — always HTTP 200
-6. Mobile schedules snapshot reloads at 300ms and 800ms to catch the AI response appearing
+- Desktop is source of truth for mode (Fast/Planning) and model selection
+- Client periodically fetches `/app-state` endpoint
+- Server extracts current mode/model from remote UI via CDP JavaScript evaluation
+- Client displays synced values in header chips
 
-**Remote Click (Thought Expansion / Run / Reject):**
+**Interaction Flow (User Clicks Mobile UI):**
 
-1. User taps an element in the rendered snapshot
-2. `chatContainer` click listener in `app.js` identifies the action: "Thought/Thinking" block → `remote-click`; "Run"/"Reject" button → `remote-click`
-3. Determines occurrence index by scanning matching elements in the local snapshot DOM (leaf-node deduplication)
-4. POSTs `{ selector, index, textContent }` to `/remote-click`
-5. Server's `clickElement()` (in `targets/antigravity.js`) runs CDP JS: queries desktop DOM with selector, filters by textContent first-line match, applies leaf-node filter to avoid clicking containers, clicks at `index`
-6. Mobile schedules 3 snapshot reloads at 400ms / 800ms / 1500ms to catch animation completion
+1. Mobile user clicks element in rendered snapshot
+2. Client sends `POST /remote-click` with selector and optional text filter
+3. Server executes `clickElement(cdp, { selector, index, textContent })` 
+4. Function runs JavaScript in remote contexts to find and click matching element
+5. Remote UI state changes trigger new snapshot capture
+6. Updated snapshot pushed to clients via WebSocket
 
-**Scroll Synchronization:**
+**Chat History Navigation:**
 
-1. Mobile `chatContainer` scroll event fires, debounced to 150ms
-2. `syncScrollToDesktop()` POSTs `{ scrollPercent }` to `/remote-scroll`
-3. Server's `remoteScroll()` (in `targets/antigravity.js`) via CDP JS computes `maxScroll * scrollPercent` and sets `scrollTop` on the desktop scroll container
-4. A snapshot reload is triggered since Antigravity uses virtualized scrolling (only visible messages are in DOM)
+1. Client clicks History button → triggers `getChatHistory(cdp)` on server
+2. Server runs JavaScript in remote contexts to extract chat titles from DOM
+3. Returns array of `{ title, date, sessionId? }` objects
+4. Client displays modal with chat list
+5. User selects chat → `POST /select-chat` with chatTitle parameter
+6. Server runs `selectChat(cdp, chatTitle)` which:
+   - Finds history button in remote UI
+   - Searches for element matching chat title
+   - Clicks it, waits for chat to load
+7. New snapshot renders in client
 
-**State Sync (Mode/Model):**
+**State Management:**
 
-1. Mobile calls `GET /app-state` on load and every 5 seconds via `setInterval`
-2. Server runs CDP JS (`getAppState()` in `server.js`): traverses leaf text nodes to find "Fast"/"Planning" (mode) and "Gemini"/"Claude"/"GPT" (model) in a clickable ancestor context
-3. Mobile updates mode/model chips in the settings bar; desktop is always source of truth
-
-**Target Switching:**
-
-1. Mobile polls `GET /targets` every 5 seconds; tab state updated accordingly
-2. User taps a target tab → `switchTarget(id)` → POSTs to `/switch-target`
-3. Server sets `currentTarget`, clears `lastSnapshot`/`lastSnapshotHash`, attempts `initCDP()` if target not yet connected
-4. Mobile clears chat content and schedules a fresh `loadSnapshot()`
+- **Server State:** `currentTarget` (string), `cdpConnections` (Map of target → CDP connection), `lastSnapshot` (object), `lastSnapshotHash` (string)
+- **Client State:** `autoRefreshEnabled`, `userIsScrolling`, `userScrollLockUntil`, `forceScrollBottomOnLoad`, `currentMode`, `chatIsOpen`
+- **Ephemeral:** User scroll position preserved during updates; percentage-based restoration after content changes
 
 ## Key Abstractions
 
-**Target Interface:**
-- Purpose: Uniform API for each supported desktop AI tool
-- Files: `targets/antigravity.js`, `targets/claude.js`
-- Required exports: `discover(list)` → `{ url, title } | null`, `captureSnapshot(cdp)` → snapshot object, `injectMessage(cdp, text)` → `{ ok, method? }`
-- Optional exports (Claude only): `performAction(cdp, action)`, `getToolbarState(cdp)`
+**CDP Connection Object:**
+- Purpose: Wraps WebSocket connection to remote browser
+- Examples: Created in `connectCDP()` function
+- Pattern: Contains `{ ws, call, contexts }` where `call` is async function for RPC-style CDP method invocation
+- Timeout: 30 seconds per call with memory leak protection (pending calls cleaned up)
 
-**CDP Object (`cdp`):**
-- Purpose: Active connection to a single desktop tool rendering process
-- Shape: `{ ws, call(method, params): Promise, contexts: Array<{id, name, origin, auxData}> }`
-- Pattern: `call()` wraps CDP WebSocket into Promise with 30s timeout + `pendingCalls` Map to prevent leaks. Contexts tracked via `Runtime.executionContextCreated/Destroyed` events. All target operations iterate `cdp.contexts` and return the first non-error result
+**Target Discovery:**
+- Purpose: Identify correct tab/window for target application
+- Examples: `antigravity.discover()` finds tab with workbench.html; `claude.discover()` finds Claude Code extension iframe
+- Pattern: Each target exports `discover(list)` that searches Chrome DevTools `/json/list` response
 
-**Target Registry (`TARGETS`):**
-- Purpose: Maps target IDs to adapter modules — the only place a new target needs to be registered
-- Location: `server.js` line 20: `const TARGETS = { antigravity, claude }`
-- Pattern: To add a new target: create `targets/newtarget.js` with required interface → import → add to `TARGETS` → add connection logic to `initCDP()`
+**Snapshot Format:**
+- Purpose: Transferrable HTML + CSS representation of remote UI
+- Structure: `{ html: string, css: string, backgroundColor, color, fontFamily, scrollInfo, stats }`
+- Used for: Rendering in `<div id="chatContent">` without needing DOM references to original
 
-**Snapshot Object:**
-- Purpose: Serialized point-in-time representation of the desktop AI tool's UI
-- Shape: `{ html, css, backgroundColor, color, fontFamily, scrollInfo: { scrollTop, scrollHeight, clientHeight, scrollPercent }, stats: { nodes, htmlSize, cssSize } }`
-- Produced by: `captureSnapshot()` in each target adapter
-- Stored in: Module-level `lastSnapshot` in `server.js`
-- Consumed by: `GET /snapshot` route → mobile client
-
-**Context Iteration Pattern:**
-- Purpose: Handles that CDP targets may have multiple execution contexts (main frame, iframes, extensions)
-- Pattern used in: Every target adapter function — `for (const ctx of cdp.contexts) { try { ... } catch (e) {} }` — returns first successful result, swallows per-context errors
+**Target Module Pattern:**
+- Purpose: Pluggable target implementations
+- Exports: `discover()`, `captureSnapshot()`, `injectMessage()`, `startNewChat()`, `getChatHistory()`, `selectChat()`, etc.
+- Differences: Antigravity looks for #cascade container; Claude targets document.body and normalizes inline styles
 
 ## Entry Points
 
-**Server Entry:**
-- Location: `server.js` `main()` function (~line 1719)
-- Triggers: `node server.js` (via `npm start`)
-- Responsibilities: Attempts initial CDP discovery (non-fatal on failure), creates HTTP/HTTPS server, starts polling loop, registers all routes, registers SIGINT/SIGTERM graceful shutdown
+**Server Start:**
+- Location: `server.js` root level
+- Triggers: `node server.js` or `npm start`
+- Responsibilities: Kill existing port process, discover targets, establish CDP connections, start HTTP/HTTPS server, poll for snapshots
 
-**Mobile UI Entry:**
-- Location: `public/index.html` → loads `public/js/app.js`
-- Triggers: Browser loads the authenticated page
-- Responsibilities: Injects static dark-mode CSS once, connects WebSocket, fetches initial snapshot, starts 5s state/target sync intervals
+**Client Load:**
+- Location: `public/index.html` → `public/js/app.js`
+- Triggers: User navigates to `http://localhost:3000` or deployed URL
+- Responsibilities: Initialize UI, connect WebSocket, check authentication, load first snapshot, set up event listeners
 
-**Python Launcher Entry:**
-- Location: `launcher.py`
-- Triggers: `start_ag_phone_connect.sh` / `.bat` (local) or `start_ag_phone_connect_web.sh` / `.bat` (ngrok)
-- Responsibilities: Checks Node/Python deps, creates `.env` if missing, optionally starts ngrok tunnel, prints QR code and magic link URL, starts `node server.js` subprocess
+**API Routes:**
+- **GET /snapshot:** Returns current cached snapshot
+- **POST /refresh:** Force capture new snapshot immediately
+- **POST /send:** Inject message into remote chat
+- **POST /set-mode:** Click mode button (Fast/Planning) in remote UI
+- **POST /set-model:** Click model selector in remote UI
+- **POST /stop:** Click stop/cancel button in remote generation
+- **POST /remote-click:** Click arbitrary element by selector
+- **POST /remote-scroll:** Scroll remote chat container
+- **POST /new-chat:** Start new conversation in remote
+- **GET /chat-history:** Scrape chat history from remote UI
+- **POST /select-chat:** Navigate to specific chat by title
+- **POST /switch-target:** Change current target (antigravity ↔ claude)
+- **GET /targets:** Get list of available targets and connection status
 
 ## Error Handling
 
-**Strategy:** Silent degradation — most failures are logged but do not surface to the mobile client. The periodic polling self-corrects transient issues.
+**Strategy:** Graceful degradation with client-side fallbacks
 
 **Patterns:**
-- CDP call timeout: 30s, implemented via `setTimeout` + `pendingCalls` Map in `connectCDP()` — prevents memory leaks from unresolved promises
-- WebSocket disconnect: Mobile auto-reconnects every 2s via `ws.onclose` handler
-- CDP connection loss: Polling loop detects `ws.readyState !== OPEN` → calls `initCDP()` every 2s; returns 503 on any action endpoint call while disconnected
-- Snapshot errors: Logged at most once per 10s (`lastErrorLog` debounce) to avoid log spam; mobile client shows last valid snapshot
-- Context failures: Each CDP `Runtime.evaluate` call is tried in all contexts; if all fail, functions return structured error (`{ ok: false, reason }`) rather than throwing
-- Port conflict: `killPortProcess()` runs before `server.listen()` using `netstat`/`lsof` platform detection
 
-## Authentication
-
-**Model:** Cookie-based signed session, bypassed for LAN clients
-
-**Flow:**
-1. `isLocalRequest(req)` checks for proxy headers (`x-forwarded-for`) and private IP ranges — same-LAN devices skip auth entirely
-2. Remote clients (via ngrok) authenticate via:
-   - `POST /login` with `APP_PASSWORD` body → sets signed `HttpOnly` cookie (30-day expiry)
-   - Magic link: `GET /?key=APP_PASSWORD` query param → auto-sets cookie, redirects to `/`
-3. WebSocket connections verify the signed cookie manually in the `wss.on('connection')` handler (WS upgrade bypasses Express middleware)
-4. `AUTH_TOKEN` is derived as `hashString(APP_PASSWORD + AUTH_SALT)` — the cookie value is never the raw password
+- **CDP Connection Failures:** If target discovery fails on startup, error logs and exits; if connection drops during runtime, reconnection attempts every 1 second
+- **Snapshot Capture Failures:** Returns null; client shows "Waiting for snapshot" loading state
+- **JavaScript Evaluation Failures:** Tries all execution contexts (Runtime.executionContexts); returns error object with message
+- **Authentication Failures:** Client redirects to `/login.html` on 401 response
+- **Missing Elements:** Returns error describing what wasn't found (e.g., "Element not found at index 0 among 5 matches")
 
 ## Cross-Cutting Concerns
 
-**Logging:** `console.log/warn/error` with emoji prefixes (`✅`, `⚠️`, `🔍`, `📸`). No structured logging library. Polling errors are rate-limited to once per 10s.
+**Logging:** 
+- Server uses `console.log()` with prefixes: `[AUTH]`, `[TARGET]`, `[CDP]`, `[SYNC]`, `[SNAPSHOT]`
+- Client uses `console.log()` with same prefixes for correlation
+- No persistent logging layer; output to stdout/browser console
 
-**Validation:** Minimal. Route handlers check only that required body params are present. CDP JS execution errors are caught per-context and do not propagate.
+**Validation:**
+- Passwords checked against `APP_PASSWORD` env var
+- Mode parameter validated against `['Fast', 'Planning']`
+- Model names passed through to remote UI search (user-provided strings)
+- Authentication enforced via middleware for all routes except `/login`, `/login.html`, `/css/*`, `/health`
 
-**SSL:** Auto-detected from `certs/server.key` + `certs/server.cert`. If present, `https.createServer()` is used; otherwise `http.createServer()`. Generation via `generate_ssl.js` (OpenSSL if available, Node `crypto` fallback).
+**Authentication:**
+- Hybrid: Local Wi-Fi requests (127.0.0.1, 192.168.x.x, 10.x.x.x) bypass auth
+- Remote/external requests require signed cookie `ag_auth_token`
+- Magic link support: `?key=APP_PASSWORD` auto-sets cookie
+- Session duration: 30 days if password provided
 
-**Compression:** `compression` middleware applied globally to all HTTP responses.
+**SSL/HTTPS:**
+- Optional; generates certs if requested via `/generate-ssl` endpoint
+- Runtime check determines whether to use `https.createServer()` or `http.createServer()`
+- Certs stored in `certs/` directory (not committed to git)
 
-**Port Conflict Resolution:** `killPortProcess()` runs before `server.listen()` using platform-specific commands (`netstat /findstr` on Windows, `lsof -ti` on Unix). Returns a 500ms delay Promise to let the port release.
-
-**CSS Strategy (Mobile Client):** Two-layer injection:
-- `STATIC_DARK_CSS` constant (~200 lines) injected once at page load into `<style id="cdp-static-styles">` — never rebuilt
-- Dynamic CSS from each snapshot injected into `<style id="cdp-dynamic-styles">` — only updated when content hash changes (length + first 64 chars check)
+**Real-time Synchronization:**
+- Hash-based change detection on snapshot HTML; only broadcasts update if different
+- User scroll lock (3 seconds) prevents auto-scroll during user interaction
+- Percentage-based scroll restoration for better UX during frequent updates
 
 ---
 

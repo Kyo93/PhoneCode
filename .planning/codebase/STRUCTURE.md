@@ -5,241 +5,186 @@
 ## Directory Layout
 
 ```
-PhoneCode/
-├── server.js                            # Main Node.js server (~1940 lines)
-├── ui_inspector.js                      # CDP utility: serialize DOM tree for debugging
-├── generate_ssl.js                      # SSL cert generator (OpenSSL or Node crypto)
-├── launcher.py                          # Python launcher: ngrok, QR code, dependency setup
-├── discovery_claude.js                  # Standalone script: scan CDP ports for Claude targets
-├── find_claude_editor.js                # Standalone script: locate Claude editor process
-├── inspect_claude_webview.js            # Standalone script: inspect Claude Code webview
-├── targets/                             # Target adapter modules (one per supported desktop tool)
-│   ├── antigravity.js                  # Antigravity AI (VS Code/Electron fork)
-│   └── claude.js                       # Claude Code VS Code extension
-├── public/                              # Mobile web frontend (served as static files)
-│   ├── index.html                      # SPA entry point (mobile-optimized)
-│   ├── login.html                      # Authentication page
+Phone-Chat/
+├── server.js                    # Main Express server with CDP orchestration
+├── package.json                 # Node dependencies and scripts
+├── package-lock.json            # Locked dependency versions
+├── ui_inspector.js              # Helper module for inspecting remote UI structure
+├── generate_ssl.js              # SSL certificate generation script
+├── launcher.py                  # Python launcher (deployment/integration)
+├── public/                      # Static web assets served by Express
+│   ├── index.html               # Main SPA shell with layout and modals
+│   ├── login.html               # Authentication form
 │   ├── js/
-│   │   └── app.js                     # Client-side application logic (~1249 lines)
+│   │   └── app.js               # Client-side JavaScript (state, WebSocket, UI logic)
 │   └── css/
-│       └── style.css                  # Mobile stylesheet (~20KB)
-├── assets/                              # Images and media for documentation
-├── certs/                               # SSL certificates (gitignored)
-│   ├── server.key                      # Private key
-│   └── server.cert                     # Self-signed certificate
-├── .env                                 # Local secrets (gitignored)
-├── .env.example                         # Environment variable template
-├── package.json                         # Node.js metadata and dependencies
-├── package-lock.json                    # Locked dependency versions
-├── start_ag_phone_connect.bat           # Windows launcher (local Wi-Fi mode)
-├── start_ag_phone_connect.sh            # macOS/Linux launcher (local Wi-Fi mode)
-├── start_ag_phone_connect_web.bat       # Windows launcher (ngrok global mode)
-├── start_ag_phone_connect_web.sh        # macOS/Linux launcher (ngrok global mode)
-├── install_context_menu.bat             # Windows right-click context menu manager
-├── install_context_menu.sh              # Linux right-click context menu installer
-├── .github/                             # GitHub configuration
-└── .planning/                           # GSD planning documents
-    └── codebase/                       # Codebase analysis docs (this file)
+│       └── style.css            # Mobile-responsive styling
+├── targets/                     # Target adapter modules (pluggable)
+│   ├── antigravity.js           # Antigravity workbench CDP handler
+│   └── claude.js                # Claude Code extension CDP handler
+├── certs/                       # SSL certificates (generated, not committed)
+│   ├── server.key
+│   └── server.cert
+├── .env                         # Environment configuration (not committed)
+├── .env.example                 # Example env vars
+├── .planning/                   # GSD planning documents
+│   ├── codebase/                # This codebase analysis
+│   ├── phases/                  # Phase-specific planning
+│   └── references/              # Reference materials
+└── node_modules/                # Installed dependencies (not committed)
 ```
 
 ## Directory Purposes
 
-**`targets/` — Target Adapter Modules:**
-- Purpose: One module per supported desktop AI tool. Each encapsulates all DOM-level knowledge for that tool: how to find it via CDP, how to capture its UI, how to inject messages
-- Key files: `targets/antigravity.js`, `targets/claude.js`
-- Required module interface: `export function discover(list)`, `export async function captureSnapshot(cdp)`, `export async function injectMessage(cdp, text)`
-- Adding a new target: create `targets/newtarget.js` with this interface → import in `server.js` → add to `TARGETS` object → handle in `initCDP()`
+**`public/`:**
+- Purpose: Served as static files by Express
+- Contains: HTML markup, CSS styling, client-side JavaScript
+- Key files: `index.html` (shell), `js/app.js` (logic), `css/style.css` (design)
 
-**`public/` — Mobile Web Frontend:**
-- Purpose: All files served by Express `express.static()` — no build step
-- Contains: SPA HTML shell, CSS, client JS
-- Key files: `index.html` (DOM structure), `js/app.js` (all client logic), `css/style.css` (mobile dark theme)
-- Served at: `GET /` (redirected from `/login.html` after auth)
+**`targets/`:**
+- Purpose: Target-specific adapter implementations
+- Contains: Functions for discovering, capturing, and interacting with remote applications
+- Key files: `antigravity.js`, `claude.js` (each is a complete target adapter)
 
-**`certs/` — SSL Certificates:**
-- Purpose: Auto-generated self-signed TLS certificates for HTTPS
-- Generated by: `generate_ssl.js` (invokable via `node generate_ssl.js` or `POST /generate-ssl`)
-- Committed: No (gitignored)
-- Detection: `server.js` checks `certs/server.key` + `certs/server.cert` existence at startup
+**`certs/`:**
+- Purpose: HTTPS/SSL certificate storage
+- Generated: Yes (via `generate_ssl.js` script)
+- Committed: No (in .gitignore)
 
-**`assets/` — Static Media:**
-- Purpose: Images used only in documentation (README, social media docs)
-- Not served: Express does not expose this directory — only `public/` is served
-- Contains: `antigravity.png`, `phone.png`, `repo_infographic.png`, etc.
-
-**`.planning/codebase/` — Analysis Documents:**
-- Purpose: GSD codebase analysis consumed by `/gsd:plan-phase` and `/gsd:execute-phase`
-- Contains: ARCHITECTURE.md, STRUCTURE.md, STACK.md, CONVENTIONS.md, TESTING.md, CONCERNS.md, INTEGRATIONS.md
-- Committed: Yes
+**`.planning/`:**
+- Purpose: GSD phase planning and analysis documents
+- Contains: Architecture docs, testing plans, phase-specific instructions
+- Committed: Yes (shared across team)
 
 ## Key File Locations
 
 **Entry Points:**
-- `server.js` ~line 1719: `async function main()` — server startup, CDP init, starts polling
-- `public/index.html` line 170: `<script src="js/app.js">` — loads mobile client
-- `public/js/app.js` line 1245: `connectWebSocket()` call — mobile client init
-
-**Target Adapters:**
-- `targets/antigravity.js` line 24: `export function discover(list)` — CDP target detection for Antigravity
-- `targets/antigravity.js` line 36: `export async function captureSnapshot(cdp)` — DOM snapshot (root: `#conversation | #chat | #cascade`)
-- `targets/antigravity.js` line 194: `export async function injectMessage(cdp, text)` — message injection
-- `targets/claude.js` line 15: `export function discover(list)` — CDP target detection for Claude Code extension
-- `targets/claude.js` line 33: `export async function captureSnapshot(cdp)` — DOM snapshot (root: `document.body`)
-- `targets/claude.js` line 142: `export async function injectMessage(cdp, text)` — message injection (handles `contenteditable="plaintext-only"`)
-- `targets/claude.js` line 250: `export async function performAction(cdp, action)` — Claude-specific toolbar actions
-- `targets/claude.js` line 344: `export async function getToolbarState(cdp)` — edit-auto toggle state
-
-**CDP Bridge Functions (server.js):**
-- ~line 20: `const TARGETS = { antigravity, claude }` — target registry
-- ~line 25: `const PORTS = [9000, 9001, 9002, 9003]` — CDP discovery ports
-- ~line 119: `async function discoverCDP()` — scans ports, calls `target.discover()` per target
-- ~line 146: `async function connectCDP(url)` — establishes WS, tracks contexts, returns `cdp` object
-- ~line 1136: `async function initCDP()` — discovers and connects all registered targets
-- ~line 1166: `async function startPolling(wss)` — 1s polling loop
-
-**Command Functions (server.js — Antigravity-specific, not in target adapter):**
-- ~line 208: `async function setMode(cdp, mode)` — Fast/Planning mode toggle
-- ~line 307: `async function stopGeneration(cdp)` — stop AI generation
-- ~line 341: `async function clickElement(cdp, {selector, index, textContent})` — deterministic remote click
-- ~line 399: `async function remoteScroll(cdp, {scrollTop, scrollPercent})` — scroll sync
-- ~line 452: `async function setModel(cdp, modelName)` — AI model switch
-- ~line 593: `async function startNewChat(cdp)` — new conversation
-- ~line 659: `async function getChatHistory(cdp)` — scrape chat list (CDP-based for Antigravity)
-- ~line 844: `async function selectChat(cdp, chatTitle)` — open chat by title
-- ~line 963: `async function closeHistory(cdp)` — send Escape key to desktop
-- ~line 989: `async function hasChatOpen(cdp)` — check for active chat
-- ~line 1013: `async function getAppState(cdp)` — read Mode + Model from DOM
-
-**Utility Functions (server.js):**
-- ~line 41: `function killPortProcess(port)` — cross-platform port cleanup
-- ~line 79: `function getLocalIP()` — detect LAN IP for display
-- ~line 106: `function getJson(url)` — HTTP GET helper (for CDP port scanning)
-- ~line 1100: `function hashString(str)` — djb2 hash for change detection
-- ~line 1111: `function isLocalRequest(req)` — detect same-LAN clients
-
-**Utility Module:**
-- `ui_inspector.js`: `export async function inspectUI(cdp)` — serializes visible DOM tree to JSON for debugging; used by `GET /debug-ui`
+- `server.js`: Backend entry point; imported with `import` (ESM)
+- `public/index.html`: Frontend entry point; browser loads first
+- `public/js/app.js`: Client-side logic initialization
 
 **Configuration:**
-- `.env`: `APP_PASSWORD`, `NGROK_AUTHTOKEN`, `PORT`, `SESSION_SECRET`, `AUTH_SALT`
-- `.env.example`: Safe template — the file to edit when adding new env vars
-- `package.json`: Runtime dependencies (`express`, `ws`, `compression`, `cookie-parser`, `dotenv`); `"type": "module"` (ESM)
+- `.env`: Environment variables (APP_PASSWORD, PORT, SESSION_SECRET, AUTH_SALT)
+- `.env.example`: Template for .env setup
+- `package.json`: Dependencies, scripts, metadata
 
-**REST API Routes (all registered in server.js):**
+**Core Logic:**
+- `server.js`: Request routing, CDP management, snapshot polling, authentication
+- `targets/antigravity.js`: Antigravity-specific DOM interaction and capture
+- `targets/claude.js`: Claude Code-specific DOM interaction and capture
+- `public/js/app.js`: Client state machine, WebSocket handler, UI updates
+- `ui_inspector.js`: Helper for serializing remote DOM structure (debugging)
 
-| Method | Path | Handler | Purpose |
-|--------|------|---------|---------|
-| POST | `/login` | inline | Authenticate, set signed cookie |
-| POST | `/logout` | inline | Clear auth cookie |
-| GET | `/snapshot` | inline | Return `lastSnapshot` JSON |
-| GET | `/health` | inline | Server + CDP status |
-| GET | `/ssl-status` | inline | HTTPS status |
-| POST | `/generate-ssl` | inline | Run `generate_ssl.js` |
-| GET | `/debug-ui` | `inspectUI()` | DOM tree JSON for debugging |
-| GET | `/ui-inspect` | inline (large) | Button/lucide icon scan across all contexts |
-| GET | `/cdp-targets` | inline | Raw CDP `/json/list` for all ports |
-| POST | `/set-mode` | `setMode()` | Fast/Planning toggle |
-| POST | `/set-model` | `setModel()` | AI model switch |
-| POST | `/stop` | `stopGeneration()` | Stop AI generation |
-| POST | `/send` | `TARGETS[currentTarget].injectMessage()` | Send message |
-| GET | `/targets` | inline | List targets + connection status |
-| POST | `/switch-target` | inline | Change `currentTarget` |
-| POST | `/claude/action` | `claude.performAction()` | Claude toolbar actions |
-| GET | `/claude/toolbar-state` | `claude.getToolbarState()` | Edit-auto toggle state |
-| POST | `/remote-click` | `clickElement()` | Click desktop element by selector+index |
-| POST | `/remote-scroll` | `remoteScroll()` | Sync scroll to desktop |
-| GET | `/app-state` | `getAppState()` | Mode + Model from DOM |
-| POST | `/new-chat` | `startNewChat()` | Start new conversation |
-| GET | `/chat-history` | `getChatHistory()` or FS read | List past chats |
-| POST | `/select-chat` | `selectChat()` | Open chat by title |
-| POST | `/close-history` | `closeHistory()` | Send Escape to desktop |
-
-**WebSocket:**
-- Server → Client: `{ type: 'snapshot_update', timestamp }` when snapshot HTML hash changes
-- Server → Client: `{ type: 'error', message: 'Unauthorized' }` on auth failure during WS upgrade
-
-**Mobile Client Key Functions (public/js/app.js):**
-- ~line 229: `(function initStaticStyles())` — injects `STATIC_DARK_CSS` once at startup
-- ~line 239: `async function fetchWithAuth(url, options)` — wraps all fetch calls with auth redirect on 401
-- ~line 259: `async function fetchAppState()` — sync Mode/Model from desktop (called every 5s)
-- ~line 281: `async function fetchTargets()` — sync target connection status (called every 5s)
-- ~line 388: `function connectWebSocket()` — WebSocket client with auto-reconnect
-- ~line 429: `async function loadSnapshot()` — fetch and render `/snapshot`
-- ~line 510: `function addMobileCopyButtons()` — inject copy buttons into `<pre>` blocks
-- ~line 669: `async function sendMessage()` — send message with optimistic UI
-- ~line 748: `async function syncScrollToDesktop()` — debounced scroll sync
-- ~line 859: `async function showChatHistory()` — load and render history layer
-- ~line 1003: `async function checkChatStatus()` — detect empty state via `/chat-status`
+**Testing:**
+- No test directory currently exists
+- Manual testing via browser/device at `http://localhost:3000`
 
 ## Naming Conventions
 
 **Files:**
-- Lowercase with underscores: `server.js`, `ui_inspector.js`, `generate_ssl.js`
-- Shell/bat scripts: lowercase with underscores: `start_ag_phone_connect.sh`, `install_context_menu.bat`
-- Python: lowercase with underscores: `launcher.py`
+- Server: `server.js` (root level)
+- Modules: Descriptive names like `ui_inspector.js`, `generate_ssl.js`
+- Targets: Named after application they target: `antigravity.js`, `claude.js`
+- Frontend: `app.js` (monolithic), `index.html`, `style.css`
 
-**Functions (JavaScript):**
-- Async server functions: camelCase with domain prefix: `discoverCDP`, `connectCDP`, `captureSnapshot`, `injectMessage`, `setMode`, `getAppState`
-- Pure helpers: camelCase: `hashString`, `getLocalIP`, `getJson`, `isLocalRequest`
-- Client functions: camelCase: `loadSnapshot`, `sendMessage`, `fetchWithAuth`, `switchTarget`
+**Directories:**
+- kebab-case: `.planning/codebase`, `node_modules` (following npm convention)
+- lowercase: `targets/`, `public/`, `certs/`
+
+**Functions:**
+- camelCase: `connectCDP()`, `captureSnapshot()`, `injectMessage()`, `selectChat()`
+- Prefix with target: `getClaudeChatHistoryFromDOM()` (Claude-specific)
+- Verb-first: `discoverCDP()`, `fetchWithAuth()`, `loadSnapshot()`
 
 **Variables:**
-- Module-level constants: `UPPERCASE_WITH_UNDERSCORES`: `PORTS`, `POLL_INTERVAL`, `AUTH_COOKIE_NAME`, `CDP_CALL_TIMEOUT`
-- Mutable module state: camelCase: `cdpConnections`, `currentTarget`, `lastSnapshot`, `lastSnapshotHash`
-- DOM elements in client: camelCase with type suffix: `chatContainer`, `statusDot`, `refreshBtn`, `historyLayer`, `modalOverlay`
+- camelCase: `lastSnapshot`, `currentTarget`, `autoRefreshEnabled`
+- Constants in CAPS: `TARGETS`, `PORTS`, `POLL_INTERVAL`, `AUTH_COOKIE_NAME`, `USER_SCROLL_LOCK_DURATION`
+- Boolean flags: `isLocalRequest`, `chatIsOpen`, `userIsScrolling`
 
-**Routes:** Lowercase with hyphens: `/remote-click`, `/chat-history`, `/set-mode`, `/switch-target`, `/claude/action`
-
-**Target IDs:** Lowercase, no hyphens: `'antigravity'`, `'claude'`
+**CSS Classes:**
+- kebab-case: `.chat-container`, `.send-btn`, `.modal-overlay`, `.target-tab`
+- State modifiers: `.active`, `.connected`, `.disconnected` (appended with classList)
 
 ## Where to Add New Code
 
-**New target (support a new desktop AI tool):**
-- Create `targets/newtarget.js` implementing `discover(list)`, `captureSnapshot(cdp)`, `injectMessage(cdp, text)`
-- Import in `server.js`: `import * as newtarget from './targets/newtarget.js'`
-- Add to registry: `const TARGETS = { antigravity, claude, newtarget }`
-- Add connection logic to `initCDP()` following the Antigravity/Claude pattern
-- Add tab button to `public/index.html` matching the `tab-antigravity`/`tab-claude` pattern
+**New Feature in Server:**
+- File: `server.js` (add new `app.get/post()` route handler)
+- Pattern: Place after existing routes, before server listen
+- Example: For new "pause chat" feature, add `app.post('/pause', authMiddleware, async (req, res) => {...})`
 
-**New action command (e.g., new desktop control):**
-- If Antigravity-specific: add `async function myAction(cdp, params)` to `server.js` near other action functions
-- If Claude-specific: add exported function to `targets/claude.js`
-- If target-generic: add to both `targets/antigravity.js` and `targets/claude.js`
-- Add Express route in `main()` after the existing multi-target endpoints (~line 1734)
-- Add client call in `public/js/app.js`
+**New Interaction Method (Client):**
+- File: `public/js/app.js`
+- Pattern: Add new function that calls server endpoint via `fetchWithAuth()`
+- Example: `async function pauseChat() { const res = await fetchWithAuth('/pause', ...); }`
+- Connect to UI: Add button click listener in appropriate section (after setup functions)
 
-**New UI element on mobile:**
-- Add element with unique `id` to `public/index.html`
-- Add CSS class to `public/css/style.css` following existing naming (`.component-name`, `.component-name-modifier`)
-- Add `document.getElementById()` reference at top of `public/js/app.js` with other element refs
-- Add event listener near relevant logic
+**New Target Application:**
+- Files: Create `targets/[appname].js`
+- Exports: `discover(list)`, `captureSnapshot(cdp)`, `injectMessage(cdp, text)`, `startNewChat(cdp)`, etc.
+- Register: Add to `TARGETS` object in `server.js` line 20: `import * as [appname] from './targets/[appname].js';`
+- Then add to TARGETS map
 
-**New configuration:**
-- Add to `.env.example` first (with placeholder value and comment)
-- Read in `server.js` via `process.env.MY_VAR` at the point of use, or near other constants (~line 27)
-- Never add defaults for secrets — use descriptive placeholder in `.env.example`
+**New UI Component (Frontend):**
+- HTML: Add element to `public/index.html` with id
+- CSS: Add styles to `public/css/style.css`
+- JS: Reference element via `document.getElementById()` and add listeners in `app.js`
+- Example: New settings panel would be HTML `<div id="settings">`, CSS `.settings { ... }`, JS event listener setup
+
+**Utilities:**
+- Shared helpers: Add to `ui_inspector.js` or create new `utils.js` file
+- Server helpers: Add functions near top of `server.js` before route handlers
+- Client helpers: Add functions in `app.js` near other utility functions (fetchWithAuth, etc.)
 
 ## Special Directories
 
 **`node_modules/`:**
-- Purpose: Installed npm dependencies
+- Purpose: Installed npm packages
 - Generated: Yes (via `npm install`)
-- Committed: No (gitignored)
+- Committed: No (in .gitignore)
+- Size: ~500MB+
 
 **`certs/`:**
-- Purpose: HTTPS TLS certificates (self-signed)
-- Generated: Yes (via `generate_ssl.js` or `POST /generate-ssl`)
-- Committed: No (gitignored)
+- Purpose: HTTPS certificates for secure WebSocket
+- Generated: Yes (via `generate_ssl.js` when user clicks "Enable HTTPS")
+- Committed: No (certificates are sensitive)
+- Files created: `server.key`, `server.cert`
 
-**`.claude/worktrees/`:**
-- Purpose: Git worktrees for concurrent Claude Code agent sessions
-- Generated: Yes (by Claude Code extension)
-- Committed: No (in `.gitignore`)
+**`.git/`:**
+- Purpose: Version control history
+- Committed: Yes (git metadata)
 
-**`assets/`:**
-- Purpose: Documentation images only — not served by the web server
-- Generated: No
-- Committed: Yes
+**`.planning/`:**
+- Purpose: Phase planning and codebase documentation
+- Generated: Partially (phase execution creates phase-specific docs)
+- Committed: Yes (shared documentation)
+
+**`.env` File:**
+- Purpose: Runtime configuration (secrets and settings)
+- Generated: Manual creation from `.env.example`
+- Committed: No (contains sensitive data like APP_PASSWORD)
+- Required vars: APP_PASSWORD, PORT (optional), SESSION_SECRET (optional)
+
+## Architecture Decision Points
+
+**Monolithic vs Modular:**
+- `server.js` is monolithic (~2200 lines) to keep all CDP orchestration in one place
+- Target adapters are modular (`targets/*.js`) allowing new targets without touching core server
+- `app.js` is monolithic (~2000 lines) for simplicity; state is global (acceptable for single-page app)
+
+**Snapshot-Based UI:**
+- Design rationale: Avoids maintaining real DOM state; captures "what the user sees" not "what the app is"
+- Trade-off: Slightly delayed updates vs simplicity and no JavaScript framework overhead
+- Result: ~50KB HTML + CSS per snapshot, small enough to push via WebSocket in <100ms
+
+**Hash-Based Change Detection:**
+- Rationale: Don't broadcast unchanged snapshots; detects UI changes without semantic parsing
+- Implementation: Simple string hash on snapshot HTML content
+- Limitation: False negatives (visual changes not affecting HTML) are acceptable
+
+**Execution Context Iteration:**
+- Pattern: Functions try CDP evaluation across all runtime contexts until one succeeds
+- Reason: iframes, workers, and page contexts create multiple execution scopes
+- Fallback: If all fail, return error with context info for debugging
 
 ---
 
