@@ -926,11 +926,11 @@ async function showChatHistory() {
         `;
 
         chats.forEach(chat => {
-            const safeTitleForJs = chat.title.replace(/\\/g, '\\\\').replace(/'/g, '\\\'').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '');
+            const safeTitle = chat.title.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
             const isClaude = window.lastTarget === 'claude';
             const onclick = isClaude
                 ? `hideChatHistory();`
-                : `hideChatHistory(); selectChat('${safeTitleForJs}');`;
+                : `hideChatHistory(); selectChat('${safeTitle}');`;
             html += `
                 <div class="history-card" onclick="${onclick}">
                     <div class="history-card-icon">

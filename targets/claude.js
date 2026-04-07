@@ -174,61 +174,34 @@ export async function injectMessage(cdp, text) {
 
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-        // Detect stop button via CSS module class (Claude Code uses hashed names like "stopIcon_abc123")
-        function hasSvgStop(btn) {
-            const svgEl = btn.querySelector('svg');
-            if (!svgEl) return false;
-            const cls = (svgEl.getAttribute('class') || svgEl.className?.baseVal || '').toLowerCase();
-            return cls.includes('stop') || !!btn.querySelector('svg.lucide-square, svg.lucide-circle-stop');
-        }
-
+        // Find submit button inside the same iframe doc
+        // Exclude cancel/stop buttons to avoid interrupting ongoing responses
         function isStopBtn(b) {
             const label = (b.getAttribute('aria-label') || b.getAttribute('title') || '').toLowerCase();
-            return label.includes('stop') || label.includes('cancel') || label.includes('interrupt') || hasSvgStop(b);
+            return label.includes('stop') || label.includes('cancel') || label.includes('interrupt')
+                || !!b.querySelector('svg.lucide-square, svg.lucide-circle-stop');
         }
 
-        // Search in both outer document and doc (frame may differ from document)
-        function qFind(sel) {
-            return document.querySelector(sel) || (doc !== document ? doc.querySelector(sel) : null);
-        }
-        const allBtns = [...new Set([...document.querySelectorAll('button'), ...(doc !== document ? doc.querySelectorAll('button') : [])])];
-
-        // Refuse if Claude is currently generating (stop button visible)
-        if (allBtns.some(b => b.offsetParent !== null && hasSvgStop(b))) {
-            return { ok: false, reason: 'busy' };
-        }
-
-        // 1. Specific selectors
-        let submit = qFind('button[aria-label="Send message"]')
-            || qFind('button[aria-label="Send Message"]')
-            || qFind('button[aria-label="Send"]')
+        const submit = (!isStopBtn(doc.querySelector('button[aria-label="Send"]') || document.createElement('button')) && doc.querySelector('button[aria-label="Send"]'))
+            || (!isStopBtn(doc.querySelector('button[title="Send"]') || document.createElement('button')) && doc.querySelector('button[title="Send"]'))
+            || doc.querySelector('button[aria-label="Send Message"]')
             || (() => {
-                const byIcon = qFind('button svg.lucide-arrow-right, button svg.lucide-arrow-up, button svg.lucide-send, button svg.lucide-corner-down-left')?.closest('button');
+                const byIcon = doc.querySelector('button svg.lucide-arrow-up, button svg.lucide-send, button svg.lucide-corner-down-left')?.closest('button');
                 if (byIcon && !byIcon.disabled && !isStopBtn(byIcon)) return byIcon;
                 return null;
-            })() || null;
-
-        // 2. Positional fallback: rightmost non-utility button in the toolbar
-        if (!submit) {
-            const SKIP = ['add', 'command menu', 'compact', 'context used', 'file selection', 'automatically', 'history', 'session', 'copy code', 'message actions', 'record voice', 'bypass', 'approval', 'new session'];
-            const candidates = allBtns.filter(b => {
-                if (!b.offsetParent || b.disabled) return false;
-                // Combine all text sources so textContent ("Bypass permissions") is also matched
-                const lbl = ((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '') + ' ' + (b.textContent || '')).toLowerCase();
-                return !SKIP.some(s => lbl.includes(s)) && !isStopBtn(b);
-            });
-            if (candidates.length > 0) {
-                candidates.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
-                submit = candidates[0];
-            }
-        }
+            })();
 
         if (submit && !submit.disabled) {
             submit.click();
             return { ok:true, method:"click_submit" };
         }
 
-        return { ok:false, method:"submit_not_found" };
+        const enterEvt = { bubbles: true, cancelable: true, key: "Enter", code: "Enter", charCode: 13, keyCode: 13, which: 13 };
+        editor.dispatchEvent(new KeyboardEvent("keydown", enterEvt));
+        editor.dispatchEvent(new KeyboardEvent("keypress", enterEvt));
+        editor.dispatchEvent(new KeyboardEvent("keyup", enterEvt));
+
+        return { ok:true, method:"enter_keypress" };
     })()`;
 
     // Try without contextId first (main/default context), then each known context
@@ -293,7 +266,7 @@ export async function performAction(cdp, action) {
             const btn = Array.from(doc.querySelectorAll('button')).find(b => {
                 if (!b.offsetParent) return false;
                 const label = (b.getAttribute('aria-label') || b.getAttribute('title') || b.textContent || '').toLowerCase();
-                return label.includes('auto') && (label.includes('edit') || label.includes('permit') || label.includes('allow') || label.includes('approve'));
+                return label.includes('edit') && (label.includes('auto') || label.includes('permit') || label.includes('allow'));
             });
             if (!btn) return { ok: false, error: 'edit-auto button not found' };
             btn.click();
@@ -348,7 +321,7 @@ export async function getToolbarState(cdp) {
         if (!doc) return { editAuto: null };
         const btn = Array.from(doc.querySelectorAll('button')).find(b => {
             const label = (b.getAttribute('aria-label') || b.getAttribute('title') || b.textContent || '').toLowerCase();
-            return label.includes('auto') && (label.includes('edit') || label.includes('permit') || label.includes('allow') || label.includes('approve'));
+            return label.includes('edit') && (label.includes('auto') || label.includes('permit') || label.includes('allow'));
         });
         if (!btn) return { editAuto: null };
         // Detect active state via aria-pressed or visual class
