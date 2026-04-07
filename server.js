@@ -1351,6 +1351,14 @@ async function createServer() {
         res.json(lastSnapshot);
     });
 
+    // Chat status (is a chat open in the current target?)
+    app.get('/chat-status', async (req, res) => {
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp) return res.json({ hasChat: false, hasMessages: false, editorFound: false });
+        const result = await hasChatOpen(cdp);
+        res.json(result);
+    });
+
     // Force-capture a fresh snapshot immediately (used by mobile refresh button)
     app.post('/refresh', async (req, res) => {
         const cdp = cdpConnections.get(currentTarget);
