@@ -1,237 +1,229 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-04-06
-
-## Tech Debt
-
-**Broad Exception Swallowing:**
-- Issue: Multiple catch blocks silently ignore errors with `catch (e) { }`, preventing debugging and masking real failures
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 196, 423, 530, 664, 722, 775, 816, 1298, 1312, 1337, 1424, 2009), `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\public\js\app.js` (lines 77, 103, 121, 167)
-- Impact: Silent failures in CDP communication, message injection, and UI interaction make production issues undetectable without manual testing
-- Fix approach: Replace empty catches with minimal logging (at least log to console or centralized error tracker), differentiate between expected and unexpected failures
-
-**Hardcoded Default Secrets:**
-- Issue: Fallback secrets hardcoded in code instead of requiring proper configuration
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 26, 1598, 1605)
-- Impact: Even if env vars are properly configured, fallback strings like `'antigravity_default_salt_99'` and `'antigravity_secret_key_1337'` could expose sessions if .env files are accidentally deleted or misconfigured
-- Fix approach: Remove all hardcoded fallback secrets. Fail fast at startup if AUTH_SALT or SESSION_SECRET not configured. Document required .env variables with example
-
-**Platform-Specific Process Management:**
-- Issue: Port cleanup logic uses platform-specific `execSync` commands (Windows `netstat`/`taskkill` vs Unix `lsof`/`kill`)
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 36-71)
-- Impact: Fragile across OS versions; process discovery can fail silently if command output format changes
-- Fix approach: Use cross-platform library (e.g., `find-process-by-port` npm package) instead of shelling out
-
-**Unchecked Null/Undefined Propagation in DOM Scripts:**
-- Issue: Large CDP evaluation scripts assume DOM elements exist without comprehensive fallbacks
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 224-396 in captureSnapshot, lines 437-516 in injectMessage)
-- Impact: If chat container IDs change in Antigravity/Claude Code, scripts fail silently and return null rather than reporting what went wrong
-- Fix approach: Add explicit logging of attempted selectors and which ones failed; return debug info including what elements were actually found
-
-**Single-Letter or Vague Variable Names:**
-- Issue: Important state variables use unclear names: `cdp`, `ws`, `wss` in global scope; `ctx`, `el`, `rect` in loops
-- Files: Throughout `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js`
-- Impact: Difficult to audit state flow and find where connections are being properly closed
-- Fix approach: Use descriptive names; separate concerns into classes or modules
-
-## Known Bugs
-
-**Message Injection Targets Multiple Editors (Last One Wins):**
-- Symptoms: If multiple contenteditable divs exist, the script picks `.at(-1)` (last in DOM), which may not be the active editor
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (line 451)
-- Trigger: Open a chat with reply threads or nested comment sections visible while editor is below
-- Workaround: Ensure only one visible editor by closing side panels
-
-**Safari/iOS Compatibility Not Explicitly Tested:**
-- Symptoms: Desktop locks onto last target (antigravity/claude), but WebSocket may not reconnect if network drops
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\public\js\app.js` (line 189)
-- Trigger: Switch phones or toggle Wi-Fi
-- Workaround: Manually refresh browser tab after network reconnect
-
-**Chat History Panel May Remain Open on Mobile:**
-- Symptoms: History panel opens on desktop but close logic only works if Escape key is recognized by focused element
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 1291-1314)
-- Trigger: Call getChatHistory on mobile, then try to interact with main view
-- Workaround: Manually navigate back or refresh
-
-## Security Considerations
-
-**Cross-Platform Code Injection via execSync:**
-- Risk: Windows `netstat` and `taskkill` commands are constructed with user-controlled port numbers. If PORT env var is malicious, could execute arbitrary commands
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 40, 50, 56, 60)
-- Current mitigation: PORT is numeric-only; process IDs extracted via regex; commands are deterministic
-- Recommendations: Use native Node.js APIs (e.g., `net` module or `find-process-by-port` npm package) instead of shelling out. Never construct shell commands from user input
-
-**Authentication Token Not HttpOnly on Some Paths:**
-- Risk: Auth cookie is set with `httpOnly: true` (good), but local Wi-Fi bypass doesn't require cookie at all, relying only on IP detection
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 1622-1625, 2019-2021)
-- Current mitigation: Local network ranges are checked (192.168, 10.x, etc.), but IPv6-mapped addresses could be spoofed on same network
-- Recommendations: Add option to disable local bypass if running on untrusted networks; log all IP-based authentications; consider requiring token even for local requests
-
-**Weak Password Hashing for Auth Token:**
-- Risk: Simple custom `hashString()` function (line 1430-1438) uses bitwise AND, vulnerable to collisions
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (line 1599, 1430-1438)
-- Current mitigation: Used only as supplement to salt, not primary auth mechanism
-- Recommendations: Use crypto.createHash('sha256') or bcrypt library for auth token generation instead of custom hash
-
-**No Rate Limiting on Login Endpoint:**
-- Risk: `/login` endpoint accepts unlimited password attempts
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 1654-1666)
-- Current mitigation: Password is 6-digit passcode (weak brute force resistance)
-- Recommendations: Add rate limiting (e.g., max 5 attempts per IP per minute); use stronger default passwords; implement exponential backoff
-
-**CDP Connection Tokens Exposed in Logs:**
-- Risk: WebSocket debug URLs for CDP connections are logged to console and potentially to server_log.txt
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 1471-1490)
-- Current mitigation: URLs are localhost-only and require port forwarding to access from outside
-- Recommendations: Mask WebSocket URLs in logs; strip auth credentials from debug output
-
-## Performance Bottlenecks
-
-**Snapshot Capture Performance Degradation Over Time:**
-- Problem: Every CSS rule from every stylesheet is concatenated into a single string without deduplication
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 374-382)
-- Cause: `allCSS` accumulates rules even if multiple sheets contain identical rules; can grow to megabytes after hours
-- Improvement path: (1) Parse and deduplicate CSS rules, (2) Only include rules matching captured DOM elements, (3) Implement CSS minification, (4) Cache computed CSS between snapshots
-
-**Full DOM Clone on Every Snapshot:**
-- Problem: `cascade.cloneNode(true)` clones entire chat history DOM (potentially thousands of messages)
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (line 253)
-- Cause: No incremental or delta snapshots; each poll captures complete state
-- Improvement path: (1) Implement viewport-aware snapshotting (only capture visible messages), (2) Use MutationObserver to detect changes instead of polling, (3) Compress snapshot before sending to client
-
-**Polling Interval Blocks on Slow Snapshots:**
-- Problem: If `captureSnapshot()` takes 2+ seconds but `POLL_INTERVAL` is 1 second, polling queue backs up
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 1494-1570)
-- Cause: Blocking setTimeout inside async function; no queue management
-- Improvement path: Use `setImmediate()` or skip polls if previous poll still in flight; add telemetry to measure actual capture time
-
-**Base64 Image Encoding In-Browser Blocks Main Thread:**
-- Problem: Converting all images to base64 during snapshot (line 322-337) blocks browser rendering
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 320-337)
-- Cause: `Promise.all()` with FileReader operations; no timeout or cancellation
-- Improvement path: (1) Implement lazy image loading (fetch on-demand), (2) Skip large images, (3) Use worker thread if available
-
-**WebSocket Broadcast to All Clients (No Filtering):**
-- Problem: Every snapshot update broadcasts to all connected clients even if they're idle
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 1536-1543)
-- Cause: No client subscription model; all updates go to all clients
-- Improvement path: (1) Add client-side filtering (send delta snapshots), (2) Implement backpressure when client buffer fills, (3) Use message compression
-
-## Fragile Areas
-
-**CDP Context Discovery and Lifecycle Management:**
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 158-218, 1465-1492)
-- Why fragile: Contexts are created/destroyed asynchronously by the browser; code tracks them in arrays that get out of sync if Antigravity restarts
-- Safe modification: (1) Validate context still exists before each CDP call, (2) Re-discover contexts if any call fails with "invalid context", (3) Implement exponential backoff for reconnection
-- Test coverage: No unit tests for context lifecycle; only manual testing with browser restarts
-
-**Chat Container Selection Across Different UIs:**
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 231-232, 449, 676)
-- Why fragile: Fallback selector chain `#conversation || #chat || #cascade` assumes one of these IDs exists; if Antigravity refactors HTML IDs, all snapshots fail
-- Safe modification: (1) Add version detection (query app version from CDP first), (2) Log which selector matched for debugging, (3) Provide admin endpoint to manually override selectors
-- Test coverage: Selectors only tested against live Antigravity instances
-
-**iframe Access in Claude Code Extension:**
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 445-446, 489-490)
-- Why fragile: Assumes `#active-frame` exists and is accessible from parent context; VS Code webview iframe sandboxing could change
-- Safe modification: (1) Verify iframe accessibility with try/catch, (2) Provide fallback to parent document context, (3) Test against multiple VS Code versions
-- Test coverage: Only tested against Claude Code extension in current VS Code version
-
-**Mode/Model Detection via Text Content:**
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 1343-1427 in getAppState)
-- Why fragile: Searches for text "Fast", "Planning", "Claude", "Gemini", "GPT" as leaf nodes; if UI wraps these in new elements, detection breaks
-- Safe modification: (1) Add data-testid or data-* attributes to mode/model selectors, (2) Fallback to querying server API if text search fails, (3) Provide manual override UI
-- Test coverage: Text matching only tested against current UI
-
-## Scaling Limits
-
-**In-Memory CDP Connection State:**
-- Current capacity: Supports ~10-20 concurrent WebSocket connections with snapshot cache
-- Limit: Memory grows with number of clients × number of snapshots retained (no cache eviction)
-- Scaling path: (1) Implement LRU cache for snapshots (keep last 10), (2) Move CDP connections to separate process, (3) Use Redis for distributed connection state
-
-**Single-Process Node.js Server:**
-- Current capacity: Max throughput ~100 requests/second on typical machine
-- Limit: CPU-bound snapshot generation blocks all other requests; no load balancing
-- Scaling path: (1) Use cluster module to spawn worker pools, (2) Implement queue (Bull/Bee-Queue), (3) Offload snapshot generation to separate service
-
-**WebSocket Broadcast Scalability:**
-- Current capacity: ~50 concurrent clients on single machine before WebSocket broadcast becomes bottleneck
-- Limit: `wss.clients.forEach()` loop is O(n) per snapshot; no message batching
-- Scaling path: (1) Implement message bus (Redis Pub/Sub), (2) Add message queuing with backpressure, (3) Use CompressionStream for large snapshots
-
-## Dependencies at Risk
-
-**pyngrok (Python):**
-- Risk: Dependency on external ngrok service; if ngrok API changes or service is down, internet tunneling breaks
-- Impact: Users cannot access desktop app from mobile on public networks
-- Migration plan: (1) Support alternative tunneling (localhost.run, CloudFlare Tunnel), (2) Make tunneling optional, (3) Document setup for manual ngrok configuration
-
-**ws (WebSocket Library):**
-- Risk: No update cycle documented; potential security issues in dependencies
-- Impact: WebSocket connections vulnerable to known CVEs in older ws versions
-- Migration plan: (1) Pin ws to stable version with security patches, (2) Set up dependabot alerts, (3) Consider native HTTP/2 server push as alternative
-
-**Express.js Dependency Chain:**
-- Risk: Express depends on multiple middleware packages; security issues in transitive dependencies
-- Impact: Prototype pollution or other attacks through middleware
-- Migration plan: (1) Audit node_modules for vulnerabilities regularly, (2) Use npm audit fix, (3) Consider Fastify as lighter-weight alternative
-
-## Missing Critical Features
-
-**No Persistence of Settings:**
-- Problem: Mode (Fast/Planning), model selection, and chat history are not saved; reset on browser refresh
-- Blocks: Multi-session workflows; users must reconfigure every session
-- Fix: (1) Implement localStorage for UI preferences, (2) Store current target/mode in backend, (3) Add export/import for chat history
-
-**No Error Recovery for Failed Snapshots:**
-- Problem: If snapshot capture fails repeatedly, UI shows stale data indefinitely
-- Blocks: Graceful handling of browser crashes or Antigravity restarts
-- Fix: (1) Implement exponential backoff, (2) Show "disconnected" state after N consecutive failures, (3) Auto-reconnect with exponential backoff
-
-**No Multi-Chat Concurrent Polling:**
-- Problem: Can only monitor one target (antigravity OR claude) at a time; must switch targets manually
-- Blocks: Side-by-side comparison or multi-target automation
-- Fix: (1) Parallel polling for both targets, (2) Separate snapshot streams per target, (3) Add split-view UI
-
-**No Audit Logging:**
-- Problem: No record of who sent what messages or when; cannot track automation activity
-- Blocks: Security audits, compliance reporting, debugging
-- Fix: (1) Log all /send, /set-mode, /set-model requests with timestamp and source IP, (2) Implement log rotation, (3) Add admin UI to view logs
-
-## Test Coverage Gaps
-
-**CDP Message Injection Not Tested:**
-- What's not tested: Text insertion, React state updates, fallback button clicking, keyboard events
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 432-534)
-- Risk: Changes to Antigravity DOM or React internals silently break message sending without visible errors
-- Priority: High (core functionality)
-
-**Authentication Bypass Not Tested:**
-- What's not tested: Local IP detection, cookie validation, token expiration, concurrent sessions
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 1615-1649, 1999-2042)
-- Risk: Security vulnerabilities in auth logic could allow unauthorized access
-- Priority: High (security)
-
-**Cross-Platform Process Management Not Tested:**
-- What's not tested: Windows `netstat`/`taskkill` vs Unix `lsof`/`kill` reliability under load, edge cases with PID reuse
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 36-71)
-- Risk: Port conflicts or stuck processes on systems with heavy process churn
-- Priority: Medium (production stability)
-
-**WebSocket Reconnection Logic Not Tested:**
-- What's not tested: Client disconnects, server restarts, network partitions, backpressure
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\public\js\app.js` (lines 187-208)
-- Risk: Clients hang in disconnected state or fail to recover after transient network issues
-- Priority: High (reliability)
-
-**Mode/Model Selection UI Not Tested:**
-- What's not tested: Dropdown rendering, text matching fallbacks, concurrent selection attempts
-- Files: `C:\Users\Ocean\.gemini\antigravity\scratch\Phone-Chat\server.js` (lines 536-633, 781-919)
-- Risk: Users cannot change model or mode if UI changes
-- Priority: Medium (usability)
+**Analysis Date:** 2026-04-07
 
 ---
 
-*Concerns audit: 2026-04-06*
+## Known Bugs
+
+**Missing `/chat-status` endpoint:**
+- Symptoms: `public/js/app.js` calls `GET /chat-status` every 10 seconds (line 1006, inside `checkChatStatus()`), but no such route exists in the main `server.js`. Every call returns a 404. The `hasChatOpen()` function is defined at `server.js` line 989 but is never wired to an HTTP route.
+- Files: `server.js`, `public/js/app.js` line 1006
+- Impact: `chatIsOpen` state is never updated from the server; the "No Chat Open" empty state logic never triggers correctly via polling.
+- Fix approach: Add `app.get('/chat-status', ...)` to `server.js` calling `hasChatOpen(cdp)`. The correct implementation exists in `.claude/worktrees/agent-a3913218/server.js` at line 1342.
+
+**`textPart.trim()` crashes on null in `/chat-history`:**
+- Symptoms: When reading Claude Code `.jsonl` history files, `textPart` can be null if the content array has no `type: 'text'` entry or if `parts` is neither a string nor an array. Calling `.trim()` on null throws `TypeError: Cannot read properties of null`, which is caught silently and the endpoint returns `{ error: e.message, chats: [] }`.
+- Files: `server.js` line 1855
+- Trigger: Any session where the first user message has no text part (image-only or tool-call-only messages).
+- Fix approach: Change `const t = textPart.trim()` to `const t = textPart?.trim() ?? ''`. The fix already exists in `.claude/worktrees/agent-a5078764/server.js` at line 1866 but has not been merged to main.
+
+**`toggle-edit-auto` action is broken for Claude target:**
+- Symptoms: The "Edit Auto" button in the phone's Claude toolbar sends a CDP action but nothing changes in Claude Code. The selector in `targets/claude.js` looks for a button whose combined label/text contains both "edit" AND ("auto" OR "permit" OR "allow"), but the actual button uses different text.
+- Files: `targets/claude.js` lines 292-301 (`performAction`), lines 347-357 (`getToolbarState`)
+- Known issue: Tracked in `.planning/todos/pending/2026-04-05-fix-edit-auto-button-selector-in-claude-toolbar.md`
+- Fix approach: Visit `/ui-inspect` while Claude tab is active, find the button in `bestContextData.buttons`, capture its exact `ariaLabel`/`text`, update both selectors in `targets/claude.js`.
+
+---
+
+## Security Considerations
+
+**Hardcoded default secrets:**
+- Risk: Three secrets fall back to publicly-known default values if not set in `.env`:
+  - `APP_PASSWORD` defaults to `'antigravity'` (`server.js` line 28)
+  - `AUTH_SALT` defaults to `'antigravity_default_salt_99'` (`server.js` line 1269)
+  - `SESSION_SECRET` defaults to `'antigravity_secret_key_1337'` (`server.js` line 1276)
+- Files: `server.js` lines 28, 1269, 1276
+- Current mitigation: App is designed for local Wi-Fi use; local requests bypass auth entirely anyway.
+- Recommendations: Warn loudly at startup if any secret is still at its default value. Generate a random `AUTH_SALT` and `SESSION_SECRET` on first run if not set in `.env`.
+
+**App password printed to stdout and captured in log file:**
+- Risk: At startup, `server.js` line 1910 prints `🔐 App Password: ${APP_PASSWORD}` to stdout. The start scripts (`start_ag_phone_connect.bat`) redirect stdout to `server_log.txt`. If the log is shared or accidentally read, the password is exposed in plaintext.
+- Files: `server.js` line 1910, `server_log.txt`
+- Current mitigation: `server_log.txt` is in `.gitignore`.
+- Recommendations: Replace log line with `🔐 App Password: [set in .env]` or mask with asterisks.
+
+**Magic link passes raw password as URL query parameter:**
+- Risk: `server.js` line 1299 checks `req.query.key === APP_PASSWORD` to auto-login via QR code. The plaintext password appears in browser history, server access logs, ngrok dashboard request inspector, and any reverse proxy logs.
+- Files: `server.js` lines 1299-1307
+- Current mitigation: None.
+- Recommendations: Use a time-limited HMAC token (e.g., `crypto.createHmac('sha256', SESSION_SECRET).update(Date.now().toString()).digest('hex')`) instead of the raw password for the magic link parameter. Invalidate after first use or after 5 minutes.
+
+**No brute-force protection on `/login`:**
+- Risk: `app.post('/login')` at `server.js` line 1325 has no rate limiting, lockout, or delay. Any device can attempt unlimited password guesses.
+- Files: `server.js` lines 1325-1337
+- Current mitigation: Local network only in typical usage.
+- Recommendations: Add `express-rate-limit` on the `/login` route; enforce a delay or lockout after 5 failed attempts per IP.
+
+**Auth bypass for entire local network:**
+- Risk: `isLocalRequest()` at `server.js` lines 1112-1133 allows any device with a `192.168.*`, `10.*`, or `172.16-31.*` IP to call all API endpoints without authentication. On a shared or public Wi-Fi network (café, office, hotel), any connected device can read chat history, inject messages, and execute CDP actions.
+- Files: `server.js` lines 1112-1133, 1294
+- Current mitigation: Intentional design for "same Wi-Fi" convenience.
+- Recommendations: Add a `REQUIRE_AUTH_LOCAL=true` env var that disables the bypass. Document the risk clearly in README for users who run the server on untrusted networks.
+
+**Weak AUTH_TOKEN generation (non-cryptographic hash):**
+- Risk: `hashString()` at `server.js` lines 1101-1109 is a djb2 bit-shift variant. It has known collision patterns and is not suitable for security tokens. The token derived from it (`AUTH_TOKEN`) is used as a session cookie value. Collisions are theoretically exploitable.
+- Files: `server.js` lines 1101-1109, 1270
+- Current mitigation: Local-use app; attacker would need to be on the same network.
+- Recommendations: Replace with `crypto.createHmac('sha256', sessionSecret).update(APP_PASSWORD + authSalt).digest('hex')`.
+
+**Raw HTML from CDP snapshot injected into phone DOM:**
+- Risk: `chatContent.innerHTML = data.html` at `public/js/app.js` line 481 sets the phone chat area to HTML captured from the desktop AI app via CDP's `cloneNode`. If the AI app displayed content containing inline event handlers (`onclick`, `onmouseover`, etc.), they execute in the phone browser's context.
+- Files: `public/js/app.js` line 481
+- Current mitigation: Scripts within `<script>` tags do not execute when set via `innerHTML`, but inline event handlers do.
+- Recommendations: Sanitize the captured HTML with DOMPurify before setting innerHTML, or render it inside a sandboxed iframe.
+
+**XSS via chat title in history card onclick handler:**
+- Risk: `public/js/app.js` lines 929-935 builds `safeTitle` by escaping only `"` and `'`, then interpolates it into a string `onclick` attribute: `onclick="hideChatHistory(); selectChat('${safeTitle}');"`. Characters like backticks, parentheses, semicolons, and JS keywords in a chat title are not escaped and can execute arbitrary code when the card is clicked.
+- Files: `public/js/app.js` lines 929-935
+- Current mitigation: Chat titles come from sessions the user created (self-XSS), but the Claude JSONL reader uses the first user message as the title — a chat initiated with a malicious payload would be exploitable.
+- Recommendations: Remove string-template onclick entirely; use `element.addEventListener('click', ...)` with the title stored in a `data-*` attribute after the HTML is rendered.
+
+**Debug and SSL generation endpoints accessible to all authenticated sessions:**
+- Risk: `POST /generate-ssl` at `server.js` line 1381 executes `execSync('node generate_ssl.js', ...)`. `GET /debug-ui`, `GET /ui-inspect`, and `GET /cdp-targets` expose full DOM trees, CDP frame hierarchies, and WebSocket debugger URLs.
+- Files: `server.js` lines 1381-1395, 1398-1406, 1461-1654, 1657-1668
+- Current mitigation: Protected by cookie auth (bypassed for local network).
+- Recommendations: Gate these behind a `DEBUG_MODE=true` env var that is off by default in production.
+
+---
+
+## Tech Debt
+
+**`server.js` is a 1939-line monolith:**
+- Issue: All logic is in one file: CDP connection management, 10+ DOM automation scripts as template-string JS, HTTP routing, auth middleware, SSL handling, chat history filesystem parsing, and startup. Each CDP action function is 30-100 lines of inline JavaScript strings.
+- Files: `server.js`
+- Impact: Hard to navigate and test. Adding a third target requires editing this file in many locations.
+- Fix approach: Extract CDP action scripts into their respective target files (`targets/antigravity.js`, `targets/claude.js`). Extract auth and server setup into separate modules.
+
+**~35 silent empty catch blocks:**
+- Issue: `server.js` has approximately 35 `catch (e) { }` blocks that swallow all errors silently. CDP call failures, WebSocket errors, and DOM script exceptions disappear without a trace.
+- Files: `server.js` lines 183, 301, 335, 393, 446, 587, 654, 957, 983, 1008, 1095, and 20+ more
+- Impact: Production failures are invisible. The recent series of revert commits in git history (5 reverts in a row) is likely a symptom of this — broken behavior is hard to reproduce without logs.
+- Fix approach: At minimum, add `console.warn('[functionName] error:', e.message)` to every catch block. The `agent-af620e4e` worktree already has this applied throughout.
+
+**`document.execCommand` is deprecated:**
+- Issue: Both `targets/claude.js` line 168 and `targets/antigravity.js` line 214 use `document.execCommand?.('insertText', ...)` as the primary text-injection method. This API was deprecated in 2016 and is removed from the HTML spec; it works today only due to Chromium/Electron legacy compatibility.
+- Files: `targets/claude.js` line 168, `targets/antigravity.js` line 214
+- Impact: Will break silently when Electron or VS Code updates Chromium past the removal threshold.
+- Fix approach: Use `InputEvent` with `inputType: 'insertText'` and `DataTransfer` directly, or the `insertReplacementText` inputType. The fallback already exists; the execCommand call should become the fallback rather than the primary.
+
+**Hardcoded model list in frontend:**
+- Issue: `public/js/app.js` lines 379-386 contains a hardcoded list of AI model display names. These must be updated manually whenever the actual Antigravity models change.
+- Files: `public/js/app.js` lines 379-386
+- Fix approach: Add a `/models` endpoint that reads available models from the connected app's UI via CDP, or move the list to a server-side config file.
+
+**`package-lock.json` is gitignored:**
+- Issue: `.gitignore` line 2 excludes `package-lock.json`. Builds are non-deterministic: `npm install` can resolve different patch versions of transitive dependencies on each machine.
+- Files: `.gitignore` line 2
+- Impact: Cannot run `npm audit` consistently across environments. Security patches in transitive deps may silently not apply.
+- Fix approach: Remove `package-lock.json` from `.gitignore` and commit it.
+
+**Additional multi-target endpoints registered inside `main()` instead of `createServer()`:**
+- Issue: Routes `/targets`, `/switch-target`, `/claude/action`, `/claude/toolbar-state`, `/remote-click`, `/remote-scroll`, `/app-state`, `/new-chat`, `/chat-history`, `/select-chat`, and `/close-history` are registered inside the `main()` try-catch block at `server.js` lines 1737-1901, not alongside the other routes in `createServer()`. Route registration is split across two separate locations.
+- Files: `server.js` lines 1737-1901
+- Fix approach: Move all `app.get`/`app.post` calls into `createServer()` for a single authoritative list of endpoints.
+
+**Global state stored on `window` object:**
+- Issue: `public/js/app.js` line 299 uses `window.lastTarget = data.current` to track last known target. Application state on the global `window` is an anti-pattern.
+- Files: `public/js/app.js` line 299
+- Fix approach: Move to a module-level `let lastTarget` variable alongside the other state declarations at the top of the file.
+
+---
+
+## Fragile Areas
+
+**CSS cursor-style heuristic for clickable element discovery:**
+- Files: `server.js` DOM scripts inside `setMode()` (line 219), `setModel()` (line 452), `startNewChat()` (line 593), `getChatHistory()` (line 659), `selectChat()` (line 844), `getAppState()` (line 1013)
+- Why fragile: All click-target discovery walks up to 4-5 DOM ancestor levels checking `window.getComputedStyle(el).cursor === 'pointer'`. Any CSS framework update (Tailwind version bump, class rename) that changes hover cursor behavior breaks all of these silently, returning a vague `{ error: 'button not found' }` with no diagnostic info.
+- Safe modification: Always prefer the Priority-1 selectors (`[data-tooltip-id=...]`, `aria-label`) over the heuristic traversal. Log which fallback branch was used when a match succeeds.
+- Test coverage: None.
+
+**CDP context iteration fires on wrong frames:**
+- Files: `server.js`, `targets/antigravity.js`, `targets/claude.js`
+- Why fragile: Every CDP operation loops through all execution contexts and returns the first success. A service worker, extension background page, or hidden iframe context could respond first and silently succeed in the wrong scope. `targets/claude.js` partially mitigates this by trying without `contextId` first, but the core issue is unresolved.
+- Safe modification: Log which `contextId` returned a successful result when adding new CDP actions.
+- Test coverage: None.
+
+**`killPortProcess()` parses shell command text output:**
+- Files: `server.js` lines 41-76
+- Why fragile: Parses raw text output of `netstat -ano` on Windows. Output format varies by locale, OS version, and whether running inside WSL or Docker. A parse failure silently returns a resolved Promise (no kill attempted), and the server then fails with `EADDRINUSE`.
+- Safe modification: Consider wrapping the listen call in a try/catch for `EADDRINUSE` and retrying on the next port instead of pre-emptively killing processes.
+
+**Self-signed SSL certificate expires after 365 days:**
+- Files: `generate_ssl.js` lines 122-123, `certs/server.cert` (on disk, gitignored)
+- Why fragile: Certificate generated with `-days 365`. When it expires, all HTTPS connections fail and the phone UI shows a certificate error with no automatic renewal. There is no expiry warning in the server startup log.
+- Safe modification: Add a startup check that reads `certs/server.cert` and logs a warning if it expires within 30 days. Consider using a longer validity (e.g., 3650 days) for development certs.
+
+---
+
+## Performance Bottlenecks
+
+**Full DOM snapshot every 1 second, broadcast on any change:**
+- Problem: `startPolling()` in `server.js` calls `captureSnapshot()` every 1000ms. Each snapshot clones the full chat DOM, serializes all CSS stylesheet rules, and base64-encodes local images. For large chats this can produce 100KB–2MB per poll. On any hash change, all connected clients are notified and each independently fetches the full snapshot via a separate HTTP GET.
+- Files: `server.js` lines 1166-1241
+- Cause: No diffing; polling over-triggers even for minor streaming updates.
+- Improvement path: Embed snapshot data directly in the WebSocket `snapshot_update` message to eliminate the second fetch. Increase poll interval to 2s when content is stable for >10s.
+
+**CSS change detection uses length + 64-byte prefix:**
+- Problem: `public/js/app.js` line 470 checks `data.css.length + ':' + data.css.slice(0, 64)`. Changes that only affect the end of a large stylesheet are not detected; changes that only affect the first 64 bytes of a same-length stylesheet trigger a false-negative.
+- Files: `public/js/app.js` line 470
+- Improvement path: Apply the same `hashString()` already used for snapshot diffing on the server side to the CSS string.
+
+**`/chat-history` reads all `.jsonl` files synchronously:**
+- Problem: `server.js` lines 1826-1875 uses `fs.readdirSync` and `fs.readFileSync` to iterate every project directory and session file under `~/.claude/projects/` synchronously, blocking the Node.js event loop.
+- Files: `server.js` lines 1819-1875
+- Cause: No async I/O, no caching, no pagination.
+- Improvement path: Rewrite with `fs.promises.readdir` / `fs.promises.readFile` and `Promise.all()`. Cache results and only re-read files whose `mtime` has changed since the last request.
+
+---
+
+## Test Coverage Gaps
+
+**No test suite exists:**
+- What's not tested: All server endpoints, CDP action functions, auth logic, WebSocket auth, snapshot hashing, chat history parsing, port cleanup.
+- Files: All of `server.js`, `targets/claude.js`, `targets/antigravity.js`, `public/js/app.js`
+- Risk: Any refactoring silently breaks functionality. The git log shows 5 consecutive revert commits on the `dev` branch, suggesting regressions are currently caught only by manual testing.
+- Priority: High
+
+**CDP DOM injection scripts cannot be unit-tested:**
+- What's not tested: The JavaScript strings injected via `Runtime.evaluate` in all CDP action functions. They are plain template-literal strings embedded inside server.js — no way to import or mock them.
+- Files: `server.js` lines 211-303, 308-338, 344-396, etc.; `targets/claude.js`; `targets/antigravity.js`
+- Risk: Selector changes in Antigravity or Claude Code UI break actions with no automated detection.
+- Priority: High
+
+**Auth edge cases untested:**
+- What's not tested: IPv6-mapped addresses bypassing `isLocalRequest()`, signed cookie verification, concurrent session handling, magic link token flow.
+- Files: `server.js` lines 1112-1133, 1287-1320, 1671-1706
+- Priority: Medium
+
+---
+
+## Scaling Limits
+
+**Single shared `currentTarget` global affects all connected clients:**
+- Current capacity: One active target at a time, selected server-wide. All phone clients see the same target.
+- Limit: If two users connect simultaneously, switching targets on one user's device switches it for all users.
+- Scaling path: Move `currentTarget` to per-session state keyed by WebSocket connection or cookie session.
+
+**No WebSocket client connection limit:**
+- Current capacity: Unlimited concurrent WebSocket connections.
+- Limit: Each connection receives broadcast notifications and triggers a full HTTP snapshot fetch. Memory grows linearly with connected clients.
+- Scaling path: Add a `wss.clients.size > MAX_CLIENTS` check on connection and reject with a JSON error message.
+
+---
+
+## Dependencies at Risk
+
+**`express` 4.x with no upgrade plan:**
+- Risk: Express 5.x is released with breaking API changes. Express 4.18.x receives security patches but at lower priority. `express` 4.18.2 was released in 2022 — it is 3+ years old.
+- Impact: Security patches may be delayed; async error handling requires manual next(err) in Express 4 which is easy to miss.
+- Migration plan: Evaluate Express 5 compatibility when the next server refactor occurs.
+
+**`package-lock.json` gitignored means no auditable dependency tree:**
+- Risk: `npm audit` results differ between machines. Transitive dependency security patches are not guaranteed to apply on reinstall.
+- Files: `.gitignore` line 2
+- Migration plan: Remove from `.gitignore`, commit the lockfile, run `npm audit` as part of development workflow.
+
+---
+
+*Concerns audit: 2026-04-07*

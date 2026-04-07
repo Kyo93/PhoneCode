@@ -959,6 +959,165 @@ async function selectChat(cdp, chatTitle) {
     return { error: 'Context failed' };
 }
 
+// Select a chat session in Claude Code extension via CDP
+// Claude UI structure: buttons with title="Session history" open a sidebar,
+// session items have class names containing "sessionItem" 
+async function selectClaudeChat(cdp, chatTitle, sessionId) {
+    const safeTitle = JSON.stringify(chatTitle);
+
+    const EXP = `(async () => {
+    try {
+        const targetTitle = ${safeTitle};
+
+        // Step 1: Open the Session History panel
+        const allButtons = Array.from(document.querySelectorAll('button'));
+        let historyBtn = allButtons.find(btn => {
+            if (!btn.offsetParent) return false;
+            const t = (btn.getAttribute('title') || '').toLowerCase();
+            const a = (btn.getAttribute('aria-label') || '').toLowerCase();
+            return (t.includes('session history') || t.includes('history') ||
+                   a.includes('session history') || a.includes('history'));
+        });
+
+        if (!historyBtn) {
+            return { error: 'Session History button not found' };
+        }
+
+        // If the panel is already open (item list visible), don't click again to avoid closing it
+        let sessionItems = Array.from(document.querySelectorAll('[class*="sessionItem"]'))
+            .filter(el => el.offsetParent !== null);
+            
+        if (sessionItems.length === 0) {
+            historyBtn.click();
+            await new Promise(r => setTimeout(r, 600));
+            sessionItems = Array.from(document.querySelectorAll('[class*="sessionItem"]'))
+                .filter(el => el.offsetParent !== null);
+        }
+
+        // Filter to inner-most elements (elements that don't contain other session items)
+        // This avoids clicking a container that holds multiple items
+        sessionItems = sessionItems.filter(el => {
+            return !sessionItems.some(other => other !== el && el.contains(other));
+        });
+
+        if (sessionItems.length === 0) {
+            return { error: 'No session items found in history panel' };
+        }
+
+        // Step 3: Match session by title text
+        // Note: Claude titles in DOM are "Title\\nTime" (e.g. "Alo\\n2m")
+        const getTitle = (el) => (el.innerText || '').split('\\n')[0].trim();
+        
+        let matchedItem = sessionItems.find(el => getTitle(el) === targetTitle);
+
+        if (!matchedItem) {
+            // Fuzzy match (prefix or contains)
+            matchedItem = sessionItems.find(el => {
+                const t = getTitle(el);
+                return t.startsWith(targetTitle) || targetTitle.startsWith(t);
+            });
+        }
+
+        if (!matchedItem) {
+            const available = sessionItems.map(getTitle);
+            return { error: 'Session not found: ' + targetTitle, available, count: sessionItems.length };
+        }
+
+        // Step 4: Click the matched session
+        matchedItem.focus();
+        matchedItem.click();
+        await new Promise(r => setTimeout(r, 300));
+
+        return { success: true, method: 'claude_session_click', selected: getTitle(matchedItem) };
+    } catch (e) {
+        return { error: e.toString() };
+    }
+})()`;
+
+    let lastResult = null;
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXP,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value && !res.result.value.error) return res.result.value;
+            if (res.result?.value) lastResult = res.result.value;
+        } catch (e) { }
+    }
+    return lastResult || { error: 'No valid context found for Claude Code' };
+}
+
+// Scrape Claude's session history directly from the extension UI
+async function getClaudeChatHistoryFromDOM(cdp) {
+    const EXP = `(async () => {
+        try {
+            // 1. Check if history items are already visible
+            let sessionItems = Array.from(document.querySelectorAll('[class*="sessionItem"]'))
+                .filter(el => el.offsetParent !== null);
+            
+            // 2. If no items, try to open the History panel
+            if (sessionItems.length === 0) {
+                const historyBtn = Array.from(document.querySelectorAll('button')).find(btn => {
+                    const title = (btn.getAttribute('title') || '').toLowerCase();
+                    const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                    return (title.includes('session history') || title.includes('history') ||
+                           aria.includes('session history') || aria.includes('history')) && 
+                           btn.offsetParent !== null;
+                });
+                
+                if (historyBtn) {
+                    historyBtn.click();
+                    // Wait for transition
+                    await new Promise(r => setTimeout(r, 600));
+                    // Re-scan for items
+                    sessionItems = Array.from(document.querySelectorAll('[class*="sessionItem"]'))
+                        .filter(el => el.offsetParent !== null);
+                }
+            }
+            
+            if (sessionItems.length === 0) {
+                return { success: false, error: 'No session items found in DOM' };
+            }
+            
+            // 3. Map items to chat objects
+            const chats = sessionItems.map((el, idx) => {
+                const rawText = (el.innerText || '').trim();
+                // Claude titles often have "Hi 01\\n2m" or just "Alo"
+                const lines = rawText.split('\\n');
+                const title = lines[0].trim();
+                const timeStr = lines.length > 1 ? lines[1].trim() : '';
+                
+                return {
+                    title: title,
+                    timeStr: timeStr,
+                    sessionId: title, // We use title as ID if we don't have UUID
+                    mtime: Date.now() - (idx * 60000) // Mock mtime for sorting
+                };
+            });
+            
+            return { success: true, chats };
+        } catch (e) {
+            return { success: false, error: e.toString() };
+        }
+    })()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXP,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value?.success) return res.result.value;
+        } catch (e) { }
+    }
+    return { success: false, error: 'Failed to scrape Claude history from all contexts' };
+}
+
 // Close History Panel (Escape)
 async function closeHistory(cdp) {
     const EXP = `(async () => {
@@ -1049,15 +1208,21 @@ async function getAppState(cdp) {
         }
 
         // 2. Get Model
-        // Strategy: Look for leaf text nodes containing a known model keyword
+        // Strategy: Look for leaf text nodes containing a known model keyword,
+        // but EXCLUDE elements inside the chat/conversation container to avoid
+        // picking up model names mentioned in chat content.
         const KNOWN_MODELS = ["Gemini", "Claude", "GPT"];
-        const textNodes2 = allEls.filter(el => el.children.length === 0 && el.innerText);
-        
+        const chatRoot = document.getElementById('conversation') || document.getElementById('chat') || document.getElementById('cascade');
+        const textNodes2 = allEls.filter(el => {
+            if (el.children.length > 0 || !el.innerText) return false;
+            if (chatRoot && chatRoot.contains(el)) return false; // exclude chat content
+            return true;
+        });
+
         // First try: find inside a clickable parent (button, cursor:pointer)
         let modelEl = textNodes2.find(el => {
             const txt = el.innerText.trim();
-            if (!KNOWN_MODELS.some(k => txt.includes(k))) return false;
-            // Must be in a clickable context (header/toolbar, not chat content)
+            if (!KNOWN_MODELS.some(k => txt.includes(k)) || txt.length > 40) return false;
             let parent = el;
             for (let i = 0; i < 8; i++) {
                 if (!parent) break;
@@ -1066,12 +1231,12 @@ async function getAppState(cdp) {
             }
             return false;
         });
-        
-        // Fallback: any leaf node with a known model name
+
+        // Fallback: any leaf node with a known model name outside chat
         if (!modelEl) {
             modelEl = textNodes2.find(el => {
                 const txt = el.innerText.trim();
-                return KNOWN_MODELS.some(k => txt.includes(k)) && txt.length < 60;
+                return KNOWN_MODELS.some(k => txt.includes(k)) && txt.length < 40;
             });
         }
 
@@ -1349,6 +1514,37 @@ async function createServer() {
         }
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
         res.json(lastSnapshot);
+    });
+
+    // Chat status (is a chat open in the current target?)
+    app.get('/chat-status', async (req, res) => {
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp) return res.json({ hasChat: false, hasMessages: false, editorFound: false });
+        if (currentTarget === 'claude') {
+            // Claude Code renders inside #active-frame iframe — check that it exists and has content
+            const result = await claude.hasChatOpen(cdp);
+            return res.json(result);
+        }
+        const result = await hasChatOpen(cdp);
+        res.json(result);
+    });
+
+    // Force-capture a fresh snapshot immediately (used by mobile refresh button)
+    app.post('/refresh', async (req, res) => {
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+        try {
+            const snapshot = await TARGETS[currentTarget].captureSnapshot(cdp);
+            if (snapshot && !snapshot.error) {
+                lastSnapshot = snapshot;
+                lastSnapshotHash = hashString(snapshot.html);
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                return res.json({ success: true });
+            }
+            res.status(503).json({ error: snapshot?.error || 'Capture failed' });
+        } catch (e) {
+            res.status(500).json({ error: e.message });
+        }
     });
 
     // Health check endpoint
@@ -1802,6 +1998,13 @@ async function main() {
         app.get('/app-state', async (req, res) => {
             const cdp = cdpConnections.get(currentTarget);
             if (!cdp) return res.json({ mode: 'Unknown', model: 'Unknown' });
+            if (currentTarget === 'claude') {
+                const toolbar = await claude.getToolbarState(cdp);
+                return res.json({
+                    mode: toolbar.editAuto === true ? 'Auto Edit' : toolbar.editAuto === false ? 'Manual Edit' : 'Unknown',
+                    model: 'Claude Code'
+                });
+            }
             const result = await getAppState(cdp);
             res.json(result);
         });
@@ -1816,7 +2019,22 @@ async function main() {
 
         // Get Chat History
         app.get('/chat-history', async (req, res) => {
-            // Claude Code: read history from filesystem (~/.claude/projects/)
+            const cdp = cdpConnections.get(currentTarget);
+
+            // Claude Code: Try DOM scraping first if connected, else fallback to FS
+            if (currentTarget === 'claude' && cdp) {
+                try {
+                    const result = await getClaudeChatHistoryFromDOM(cdp);
+                    if (result.success && result.chats && result.chats.length > 0) {
+                        return res.json(result);
+                    }
+                    console.log('⚠️ DOM scraping for Claude history found nothing, falling back to FS');
+                } catch (e) {
+                    console.error('❌ DOM scraping for Claude history failed:', e);
+                }
+            }
+
+            // Claude Code: read history from filesystem (~/.claude/projects/) as PRIMARY for 'claude' or fallback
             if (currentTarget === 'claude') {
                 try {
                     const projectsDir = join(os.homedir(), '.claude', 'projects');
@@ -1848,13 +2066,13 @@ async function main() {
                                 try {
                                     const obj = JSON.parse(line);
                                     if (obj.type === 'user' && obj.message?.content) {
-                                        const parts = obj.message.content;
-                                        const textPart = Array.isArray(parts)
-                                            ? parts.find(p => p.type === 'text')?.text
-                                            : (typeof parts === 'string' ? parts : null);
-                                        const t = textPart.trim();
-                                        // Skip system-injected context tags
-                                        if (t.length > 2 && !t.startsWith('<ide_') && !t.startsWith('<local-command') && !t.startsWith('<system') && !t.startsWith('<user-prompt') && !t.startsWith('<command-')) {
+                                        const textPart = typeof obj.message.content === 'string' 
+                                            ? obj.message.content 
+                                            : (Array.isArray(obj.message.content) 
+                                                ? obj.message.content.find(p => p.type === 'text')?.text 
+                                                : null);
+                                        const t = (textPart || '').trim();
+                                        if (t.length > 2 && !t.startsWith('<') && t.length < 500) {
                                             title = t.substring(0, 80);
                                             break;
                                         }
@@ -1875,7 +2093,6 @@ async function main() {
             }
 
             // Antigravity: scrape via CDP
-            const cdp = cdpConnections.get(currentTarget);
             if (!cdp) return res.json({ error: 'CDP disconnected', chats: [] });
             const result = await getChatHistory(cdp);
             res.json(result);
@@ -1883,10 +2100,17 @@ async function main() {
 
         // Select a Chat
         app.post('/select-chat', async (req, res) => {
-            const { title } = req.body;
+            const { title, sessionId } = req.body;
             if (!title) return res.status(400).json({ error: 'Chat title required' });
             const cdp = cdpConnections.get(currentTarget);
             if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+
+            // Claude Code: navigate via CDP inside the extension webview
+            if (currentTarget === 'claude') {
+                const result = await selectClaudeChat(cdp, title, sessionId);
+                return res.json(result);
+            }
+
             const result = await selectChat(cdp, title);
             res.json(result);
         });

@@ -119,7 +119,27 @@ def main():
         os.environ['APP_PASSWORD'] = passcode # Set for child process
         print(f"⚠️  No APP_PASSWORD in .env. Using temporary: {passcode}")
 
-    # 2. Start Node.js Server (Common to both modes)
+    # 2. Start Antigravity in Debug mode
+    print("🎨 Opening Antigravity in Debug mode...")
+    try:
+        # Use 'antigravity' command directly as it's likely in PATH
+        # --remote-debugging-port=9000 is required for the server to connect via CDP
+        antigravity_cmd = ["antigravity", ".", "--remote-debugging-port=9000"]
+        
+        if sys.platform == "win32":
+            # On Windows, use start to run it detached and not block the script
+            subprocess.Popen(["cmd", "/c", "start", "antigravity", ".", "--remote-debugging-port=9000"], shell=True)
+        else:
+            subprocess.Popen(antigravity_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+        print("✅ Antigravity started. Waiting for initialization...")
+        time.sleep(3) # Give Electron some time to start and open the port
+    except Exception as e:
+        print(f"⚠️  Could not auto-start Antigravity: {e}")
+        print("👉 Please ensure Antigravity is installed and in your PATH.")
+        print("👉 Or run manually: antigravity . --remote-debugging-port=9000\n")
+
+    # 3. Start Node.js Server (Common to both modes)
     print(f"🚀 Starting Antigravity Server ({args.mode.upper()} mode)...")
     
     # Clean up old logs
