@@ -10,11 +10,22 @@ PhoneCode is a mature, working tool. The roadmap focuses on hardening the existi
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (1.1, etc.): Urgent insertions (marked with INSERTED)
 
+- [ ] **Phase 0.1: Claude Code Navigation** [INSERTED] - Fix broken conversation navigation for Claude Code target
 - [ ] **Phase 1: Testing Foundation** - Establish test infrastructure and baseline coverage for critical paths
 - [ ] **Phase 2: Tech Debt Refactoring** - Modularize server.js and improve code structure
 - [ ] **Phase 3: Mobile UX Improvements** - Better scroll sync, gesture support, and UI polish
 
 ## Phase Details
+
+### Phase 0.1: Claude Code Navigation [INSERTED]
+**Goal**: Fix broken conversation navigation for Claude Code target — chat history selection does nothing, new chat button untested, no auto-resume of most recent conversation.
+**Depends on**: Nothing (hotfix)
+**Requirements**: N/A
+**Success Criteria** (what must be TRUE):
+  1. Clicking a chat in the history panel navigates Claude Code to that conversation
+  2. "New Chat" button works for Claude Code target
+  3. On connect, Claude Code shows the most recent conversation (not blank)
+**Plans**: TBD
 
 ### Phase 1: Testing Foundation
 **Goal**: Stand up a test framework and write tests covering the most critical and fragile parts of the system — CDP bridge, snapshot pipeline, and auth middleware.
