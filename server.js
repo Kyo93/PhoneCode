@@ -1351,6 +1351,24 @@ async function createServer() {
         res.json(lastSnapshot);
     });
 
+    // Force-capture a fresh snapshot immediately (used by mobile refresh button)
+    app.post('/refresh', async (req, res) => {
+        const cdp = cdpConnections.get(currentTarget);
+        if (!cdp) return res.status(503).json({ error: 'CDP disconnected' });
+        try {
+            const snapshot = await TARGETS[currentTarget].captureSnapshot(cdp);
+            if (snapshot && !snapshot.error) {
+                lastSnapshot = snapshot;
+                lastSnapshotHash = hashString(snapshot.html);
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                return res.json({ success: true });
+            }
+            res.status(503).json({ error: snapshot?.error || 'Capture failed' });
+        } catch (e) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
     // Health check endpoint
     app.get('/health', (req, res) => {
         const cdp = cdpConnections.get(currentTarget);
@@ -1802,6 +1820,13 @@ async function main() {
         app.get('/app-state', async (req, res) => {
             const cdp = cdpConnections.get(currentTarget);
             if (!cdp) return res.json({ mode: 'Unknown', model: 'Unknown' });
+            if (currentTarget === 'claude') {
+                const toolbar = await claude.getToolbarState(cdp);
+                return res.json({
+                    mode: toolbar.editAuto === true ? 'Auto Edit' : toolbar.editAuto === false ? 'Manual Edit' : 'Unknown',
+                    model: 'Claude Code'
+                });
+            }
             const result = await getAppState(cdp);
             res.json(result);
         });

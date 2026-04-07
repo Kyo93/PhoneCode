@@ -721,8 +721,9 @@ async function sendMessage() {
 // --- Event Listeners ---
 sendBtn.addEventListener('click', sendMessage);
 
-refreshBtn.addEventListener('click', () => {
-    // Refresh both Chat and State (Mode/Model)
+refreshBtn.addEventListener('click', async () => {
+    // Force a fresh CDP capture before loading (not just reading cache)
+    try { await fetchWithAuth('/refresh', { method: 'POST' }); } catch (e) { }
     loadSnapshot();
     fetchAppState(); // PRIORITY: Sync from Desktop
 });
