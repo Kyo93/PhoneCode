@@ -928,10 +928,8 @@ async function showChatHistory() {
 
         chats.forEach(chat => {
             const safeTitle = chat.title.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-            const isClaude = window.lastTarget === 'claude';
-            const onclick = isClaude
-                ? `hideChatHistory();`
-                : `hideChatHistory(); selectChat('${safeTitle}');`;
+            const safeSessionId = (chat.sessionId || '').replace(/'/g, '');
+            const onclick = `hideChatHistory(); selectChat('${safeTitle}', '${safeSessionId}');`;
             html += `
                 <div class="history-card" onclick="${onclick}">
                     <div class="history-card-icon">
@@ -941,6 +939,7 @@ async function showChatHistory() {
                     </div>
                     <div class="history-card-content">
                         <span class="history-card-title">${escapeHtml(chat.title)}</span>
+                        ${chat.timeStr ? `<span class="history-card-time" style="font-size: 10px; color: #888; margin-left: 8px;">${escapeHtml(chat.timeStr)}</span>` : ''}
                     </div>
                     <div class="history-card-arrow">
                         <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -980,19 +979,21 @@ function hideChatHistory() {
 historyBtn.addEventListener('click', showChatHistory);
 
 // --- Select Chat from History ---
-async function selectChat(title) {
+async function selectChat(title, sessionId) {
     try {
         const res = await fetchWithAuth('/select-chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title })
+            body: JSON.stringify({ title, sessionId })
         });
         const data = await res.json();
 
         if (data.success) {
-            setTimeout(loadSnapshot, 300);
-            setTimeout(loadSnapshot, 800);
-            setTimeout(checkChatStatus, 1000);
+            // Reload snapshots with staggered timing to catch UI transition
+            setTimeout(loadSnapshot, 500);
+            setTimeout(loadSnapshot, 1200);
+            setTimeout(loadSnapshot, 2500);
+            setTimeout(checkChatStatus, 1500);
         } else {
             console.error('Failed to select chat:', data.error);
         }
