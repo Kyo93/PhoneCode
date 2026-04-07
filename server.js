@@ -1361,9 +1361,10 @@ async function createServer() {
     app.get('/chat-status', async (req, res) => {
         const cdp = cdpConnections.get(currentTarget);
         if (!cdp) return res.json({ hasChat: false, hasMessages: false, editorFound: false });
-        // Claude Code has no #cascade/#conversation container — always treat as open when connected
         if (currentTarget === 'claude') {
-            return res.json({ hasChat: true, hasMessages: true, editorFound: true });
+            // Claude Code renders inside #active-frame iframe — check that it exists and has content
+            const result = await claude.hasChatOpen(cdp);
+            return res.json(result);
         }
         const result = await hasChatOpen(cdp);
         res.json(result);

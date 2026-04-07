@@ -343,3 +343,27 @@ export async function getToolbarState(cdp) {
     }
     return { editAuto: null };
 }
+
+// Check if Claude Code has an active session (iframe loaded with content)
+export async function hasChatOpen(cdp) {
+    const EXPRESSION = `(() => {
+        const frame = document.getElementById('active-frame');
+        if (!frame) return { hasChat: false, hasMessages: false, editorFound: false };
+        const doc = frame.contentDocument || frame.contentWindow?.document;
+        if (!doc || !doc.body) return { hasChat: false, hasMessages: false, editorFound: false };
+        const editorFound = !!doc.querySelector('[contenteditable="plaintext-only"], [contenteditable="true"]');
+        const hasMessages = doc.body.children.length > 0;
+        return { hasChat: hasMessages, hasMessages, editorFound };
+    })()`;
+
+    const attempts = [null, ...cdp.contexts.map(c => c.id)];
+    for (const contextId of attempts) {
+        try {
+            const params = { expression: EXPRESSION, returnByValue: true, awaitPromise: false };
+            if (contextId) params.contextId = contextId;
+            const result = await cdp.call("Runtime.evaluate", params);
+            if (result.result?.value) return result.result.value;
+        } catch (e) { }
+    }
+    return { hasChat: false, hasMessages: false, editorFound: false };
+}
