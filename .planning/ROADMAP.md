@@ -25,7 +25,11 @@ PhoneCode is a mature, working tool. The roadmap focuses on hardening the existi
   1. Clicking a chat in the history panel navigates Claude Code to that conversation
   2. "New Chat" button works for Claude Code target
   3. On connect, Claude Code shows the most recent conversation (not blank)
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 00.1-01-PLAN.md — Backend: add selectChat + startNewChat to targets/claude.js and wire server.js endpoints
+- [ ] 00.1-02-PLAN.md — Frontend: fix history card onclick for Claude + add auto-resume on empty state
 
 ### Phase 1: Testing Foundation
 **Goal**: Stand up a test framework and write tests covering the most critical and fragile parts of the system — CDP bridge, snapshot pipeline, and auth middleware.
