@@ -1461,6 +1461,23 @@ async function startPolling(wss) {
                         }
                     });
                 }
+
+                // On cache hit: snapshot.stats.cached === true — no HTML change, no broadcast.
+                // Update lastSnapshot stats and send lightweight stats_update to all clients so the
+                // mobile stats bar shows ⚡ without reloading the full snapshot.
+                // stats_update intentionally omits `seq` — it is NOT a snapshot sequence event.
+                // Client must NOT treat this as a sequence advancement for diff tracking.
+                if (snapshot?.stats?.cached && lastSnapshot) {
+                    lastSnapshot = { ...lastSnapshot, stats: snapshot.stats };
+                    const statsMsg = JSON.stringify({
+                        type: 'stats_update',
+                        stats: snapshot.stats
+                        // seq intentionally omitted — isStatsOnly is implicit by message type
+                    });
+                    wss.clients.forEach(client => {
+                        if (client.readyState === WebSocket.OPEN) client.send(statsMsg);
+                    });
+                }
             } else {
                 // Snapshot is null or has error
                 const now = Date.now();
