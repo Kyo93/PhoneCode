@@ -1,63 +1,124 @@
 ---
 phase: 5
-reviewers: [gemini, codex]
+reviewers: [gemini, claude, codex]
 reviewed_at: 2026-04-08T00:00:00Z
 plans_reviewed: [05-01-PLAN.md, 05-02-PLAN.md, 05-03-PLAN.md]
 ---
 
 # Cross-AI Plan Review — Phase 5: Capture Pipeline Optimization
 
+---
+
 ## Gemini Review
 
-Chào bạn, tôi là Gemini CLI. Dưới đây là phần đánh giá chi tiết cho các kế hoạch thực thi thuộc **Phase 5: Capture Pipeline Optimization**.
+Chuỗi kế hoạch (05-01 đến 05-03) thể hiện tư duy tối ưu hóa phân lớp rất logic: bắt đầu từ việc giảm tải tài nguyên nặng (hình ảnh), đến giảm tải dữ liệu lặp lại (CSS), và cuối cùng là đóng băng toàn bộ quá trình xử lý khi không có thay đổi (MutationObserver). Việc sử dụng các biến global trong ngữ cảnh trình duyệt (`window.__phoneCode*`) là một giải pháp thực dụng và hiệu quả cho các công cụ dựa trên CDP injection.
 
-### Tổng quan
+**Strengths:**
+- Chiến lược LRU (50MB) dựa trên `Map` insertion-order là chuẩn xác, ngăn ngừa memory leak trong phiên dài
+- Giảm thiểu băng thông CDP: trả về `null` cho CSS và bỏ qua hoàn toàn trường `css` khi DOM không đổi
+- `invalidateSnapshotCache` + gọi nó khi chuyển target đảm bảo trạng thái cache luôn sạch
+- Plan 05-03 xử lý tốt detached node (SPA remount) của Antigravity
 
-Chuỗi kế hoạch (05-01 đến 05-03) thể hiện tư duy tối ưu hóa phân lớp rất tốt: bắt đầu từ tài nguyên nặng nhất (Hình ảnh), đến tài nguyên lặp lại nhiều nhất (CSS), và cuối cùng là cấu trúc nền tảng (DOM). Việc sử dụng cơ chế cache phía trình duyệt thông qua `Runtime.evaluate` là hướng đi chính xác để giảm tải băng thông CDP và CPU. Tuy nhiên, cần lưu ý đặc biệt đến vấn đề đồng bộ hóa trạng thái cuộn (scroll) và quản lý bộ nhớ dài hạn.
+**Concerns — Plan 05-01:**
+- **MEDIUM**: Fingerprint CSS chỉ dựa `ruleCount` có thể bỏ sót trường hợp nội dung file thay đổi nhưng số rule giữ nguyên
+- **MEDIUM**: Xử lý ảnh nhiều file gần 500KB đồng thời có thể tốn bộ nhớ tạm lớn
+
+**Concerns — Plan 05-02:**
+- **MEDIUM**: `href + ruleCount` bỏ sót trường hợp một CSS rule bị sửa giá trị nhưng không thêm/xóa rule (e.g. CSS variable thay đổi)
+
+**Concerns — Plan 05-03:**
+- **MEDIUM**: Scroll staleness — nếu AI tool tự cuộn xuống khi sinh văn bản mới mà không làm thay đổi DOM, điện thoại sẽ không thấy sự thay đổi cho đến khi có mutation tiếp theo
+- **MEDIUM**: Bỏ qua hoàn toàn trường `css` thay vì trả `css: null` có thể gây lỗi logic ở handlers cũ mong đợi object cố định
+- **LOW**: `window.__phoneCode*` có rủi ro nhỏ trùng tên; nên gom vào `window.__PC_INTERNAL = {...}`
+
+**Suggestions:**
+- Thêm `scrollY/scrollX` vào dirty check của 05-03, hoặc cập nhật scrollInfo riêng mà không cần clone DOM
+- Dùng `href + ownerNode.textContent.length` thay vì chỉ `ruleCount` cho external sheets
+- Thêm Force Refresh button trên mobile UI để gọi `invalidateSnapshotCache` thủ công
+
+**Risk Assessment: LOW** — Thứ tự triển khai đúng (05-01 → 05-02 → 05-03), các thay đổi nằm trong script inject nên failure modes an toàn.
+
+---
+
+## Claude CLI Review (Separate Session)
 
 ### Plan 05-01: Image Conversion Cache
 
+**Summary:** A well-scoped plan targeting the largest obvious waste in the current capture path. The browser-context cache fits the existing `Runtime.evaluate` model well and should materially reduce stable-poll latency. The main gaps are cache correctness, failure behavior, and whether target-switch invalidation is being treated as the only lifecycle boundary.
+
 **Strengths:**
-- Cơ chế LRU dựa trên thứ tự insertion của `Map` trong JS là giải pháp thông minh và hiệu quả.
-- Giới hạn 500KB cho mỗi ảnh giúp tránh treo trình duyệt khi xử lý các file quá lớn.
-- Việc thống kê `imgMs`, `imgCached` giúp định lượng chính xác hiệu quả tối ưu hóa.
+- LRU via Map insertion-order delete+re-set is simple and correct for this scale
+- 50MB cap + eviction loop prevents unbounded growth
+- `invalidateSnapshotCache` on target switch is the right hook point
+- Timing stats (imgMs, imgCached, imgTotal) give observable signal for validating the optimization
+- The 500KB skip rule is aligned with the phase requirement
 
 **Concerns:**
-- **MEDIUM**: Việc xử lý ảnh có thể gây tốn bộ nhớ tạm thời rất lớn nếu có nhiều ảnh dung lượng gần 500KB được xử lý cùng lúc trước khi vào cache.
-- **LOW**: Cơ chế `delete + set` để cập nhật LRU hoạt động tốt nhưng cần đảm bảo không có race condition nếu `captureSnapshot` được gọi quá dồn dập (thường không xảy ra với polling 1s).
+- **MEDIUM** — No TTL or content-change detection. If a dynamic image URL is stable but content changes (e.g. a live avatar), the cache returns stale base64 indefinitely until full cache clear.
+- **MEDIUM** — 50MB cap uses base64 byte length, but base64 is ~33% larger than the source binary. Actual browser memory use per cached image includes both the string AND the decoded bitmap. The effective cap is looser than 50MB in practice.
+- **LOW** — Fetch failures inside CAPTURE_SCRIPT: if a fetch throws (network error, CORS), missing images should be omitted without crashing the script.
+- **LOW** — Eviction loop is O(n) over all cache entries per insertion. At 50 images this is fine; worth documenting the assumption.
+- **LOW** — No mention of whether `invalidateSnapshotCache` is a no-op if the CDP connection is already closed.
 
-**Risk Assessment: LOW-MEDIUM**
+**Suggestions:**
+- Add `try/catch` around each image fetch; on error, omit that image rather than failing the whole snapshot.
+- Document the base64 overhead in the eviction comment so the effective memory ceiling is clear.
+- Consider logging a single console warning (once, not per-poll) when the 500KB skip fires.
+
+**Risk Assessment: LOW.** Self-contained browser-side cache with a clear invalidation hook.
+
+---
 
 ### Plan 05-02: CSS Collection Cache
 
+**Summary:** Solid plan with one notable correctness gap in the fingerprint strategy for external sheets, and a hard ordering constraint (task 1 before tasks 2–4) that the plan correctly identifies. The null-guard task being listed first but called out only in the "atomic apply" note creates room for implementation error.
+
 **Strengths:**
-- Xử lý được vấn đề dư thừa dữ liệu (thường là hàng trăm KB văn bản lặp lại).
-- Kết hợp tốt với Plan 05-01 thông qua hàm xóa cache chung.
-- Phân biệt đối xử giữa external sheet (href + count) và inline sheet (hash) là cách tiếp cận cân bằng giữa hiệu suất và độ chính xác.
+- Phase 4 server-side hash guard + phase 5 browser-side skip is the right layered approach
+- djb2 on inline sheet textContent is lightweight and appropriate
+- Calling out the TypeError risk (tasks 2–4 atomic) shows attention to breakage modes
+- Pre-condition dependency on 05-01 (shared invalidate path) is correct
 
 **Concerns:**
-- **MEDIUM**: Fingerprint dựa trên `ruleCount` cho external stylesheets có thể bỏ sót trường hợp một rule bị sửa đổi nội dung thuộc tính (property) nhưng không thay đổi số lượng rule. Tuy nhiên, với các công cụ AI chat, CSS thường ít thay đổi kiểu này.
+- **HIGH** — `ruleCount` fingerprint for external sheets is weak. CSS `ruleCount` stays identical when property values change (e.g. a CSS variable redefined via `:root`, a `@media` block content modified). An external sheet reload that changes values without adding/removing rules will be silently ignored. Consider `href + ruleCount + firstRuleText`.
+- **MEDIUM** — Fingerprint is per-sheet but the plan doesn't specify how the aggregate "has anything changed" check works. If a new `<style>` tag is injected, does the fingerprint array length change trigger a miss? Must be explicit.
+- **MEDIUM** — Task 1 (server null guard) is listed as a prerequisite only via the "atomic apply" note, not as a formal pre-condition. Should state clearly: *task 1 must be deployed before tasks 2–4 go live*.
+- **LOW** — djb2 is a weak hash with known collision patterns. Consider FNV-1a for better distribution.
 
-**Risk Assessment: LOW-MEDIUM**
+**Suggestions:**
+- Upgrade external sheet fingerprint: `href + ruleCount + cssRules[0]?.cssText.slice(0, 64)`
+- Make task ordering a numbered pre-condition block (matching 05-01/05-03 style), not an inline note
+- Add a fallback: if `sheet.cssRules` throws (cross-origin CORS restriction), skip fingerprinting and always re-collect that sheet
+
+**Risk Assessment: MEDIUM.** The ruleCount-only fingerprint for external sheets can silently serve stale CSS — hard to diagnose in the field.
+
+---
 
 ### Plan 05-03: MutationObserver HTML Cache
 
+**Summary:** The most complex plan and well thought-through — the Antigravity container-safety guard and the seq-omission rationale show real attention to edge cases. The main open question is MutationObserver configuration: without specifying `subtree`, `childList`, `attributes`, and `characterData`, the dirty flag behavior is undefined, and a misconfiguration here breaks the entire cache's correctness guarantee.
+
 **Strengths:**
-- Đây là "cú hích" lớn nhất về hiệu năng vì bỏ qua được thao tác `cloneNode(true)` và tuần tự hóa HTML nặng nề.
-- Xử lý thông minh vấn đề "detached node" trong `antigravity.js` bằng cách theo dõi phần tử container.
-- Cơ chế `stats_update` riêng biệt giúp UI vẫn phản hồi mượt mà mà không làm loạn số sequence của client.
+- Dirty flag pattern is the right architecture — avoids polling the DOM to detect DOM changes
+- `__phoneCodeObservedEl` reconnect guard for Antigravity SPA remount is a real problem solved correctly
+- Omitting `css` field on cache hit (vs returning `css:null`) and handling the two cases distinctly shows careful protocol design
+- `stats_update` omitting `seq` is the right call and is explicitly justified
+- Scroll staleness trade-off acknowledged
 
 **Concerns:**
-- **HIGH**: **Vấn đề Scroll.** `MutationObserver` không bắt được sự kiện cuộn. Trong một công cụ "mirroring", nếu người dùng cuộn trang trên máy tính, điện thoại sẽ bị "khựng" cho đến khi có một tin nhắn mới hoặc thay đổi DOM nào đó xảy ra. Điều này làm giảm trải nghiệm "real-time viewport".
-- **MEDIUM**: Việc bỏ qua trường `css` hoàn toàn thay vì trả về `css: null` trong cache hit có thể gây ra lỗi logic ở các hàm xử lý snapshot cũ nếu chúng mong đợi cấu trúc object cố định.
+- **HIGH** — MutationObserver config is not specified anywhere in the plan. Does it observe `subtree: true`? `attributes: true`? `characterData: true`? Without `subtree: true`, mutations in child nodes won't fire. Without `characterData: true`, text edits won't mark dirty. A wrong config means cache hits when the DOM has actually changed — the worst failure mode for this system.
+- **MEDIUM** — First-poll behavior not explicitly stated (always a miss, always capture).
+- **MEDIUM** — Task 4 (server stats propagation) and task 5 (client `stats_update` handler) have a deploy-order constraint: task 5 must handle the new message type before task 4 sends it. Not called out explicitly.
+- **LOW** — After CLEAR_SCRIPT disconnects the observer, does the next poll re-initialize it? If setup is guarded by `if (!window.__phoneCodeObserver)`, that flag must be in the cleared globals list.
+- **LOW** — `updateStatsBar()` extraction is a refactor bundled into a feature task; broadens the diff unnecessarily.
 
 **Suggestions:**
-1. Thêm kiểm tra nhanh `window.scrollY` / `window.scrollX` vào cơ chế kiểm tra `dirty`. Nếu vị trí cuộn thay đổi, đánh dấu dirty hoặc cập nhật scrollInfo trong payload mà không cần clone lại DOM.
-2. Với external sheets, kết hợp thêm `sheet.ownerNode.outerHTML` vào fingerprint để tăng độ chính xác (Plan 05-02).
-3. Trong `CLEAR_SCRIPT`, đặt các biến global về `null` để hỗ trợ Garbage Collection tốt hơn.
-4. Thêm kiểm tra dung lượng thực tế của cache định kỳ vì 50MB string UTF-16 chiếm RAM thực tế lớn hơn.
+- Specify the exact MutationObserver config object in the plan: `{ subtree: true, childList: true, characterData: true, attributes: true }` (or justify any exclusions explicitly).
+- Add explicit first-poll behavior: "if `lastHTML === null`, treat as dirty regardless of observer state."
+- Note the task 4→5 deploy order constraint explicitly.
+- Confirm that CLEAR_SCRIPT resets the observer initialization guard flag so the next poll re-attaches cleanly.
 
-**Risk Assessment: MEDIUM**
+**Risk Assessment: MEDIUM.** The unspecified MutationObserver config is a HIGH-severity gap that could cause cache hits on actual DOM changes, silently serving stale HTML. Fixable with a one-paragraph amendment before execution.
 
 ---
 
@@ -65,130 +126,139 @@ Chuỗi kế hoạch (05-01 đến 05-03) thể hiện tư duy tối ưu hóa ph
 
 ### Plan 05-01: Image Conversion Cache
 
-**Summary:** This plan is directionally correct and likely to remove the biggest obvious waste in `captureSnapshot()`: repeated `fetch` + `FileReader` work for unchanged local images in both adapters. The use of a persistent browser-side cache matches how `Runtime.evaluate` is being used today. The main gaps are around stale-cache correctness, large-image handling, and ensuring skipped or failed images do not keep getting retried every poll.
+**Summary:** Directionally strong and targets the largest obvious waste. A browser-context cache fits the existing `Runtime.evaluate` model. Main gaps are cache correctness, failure behavior, and lifecycle completeness.
 
 **Strengths:**
-- Uses page-context persistence, which fits the current `captureSnapshot()` model in targets/claude.js and targets/antigravity.js.
-- Keeps the target-specific adapter pattern intact instead of pushing CDP-specific logic into the server.
-- LRU eviction is a reasonable safeguard against unbounded browser memory growth.
-- Adds timing counters, which makes the phase goal measurable instead of anecdotal.
-- Explicit cache clear support is good for long-lived sessions.
+- Addresses real hotspot in both adapters: repeated `fetch` + `blob` + `FileReader` work
+- Uses page-context persistence matching current architecture
+- Applies symmetrically to both targets
+- Explicit stats validate the optimization
+- 500KB skip rule aligned with requirement
 
 **Concerns:**
-- **HIGH**: Keying only by URL can serve stale image data if the same URL is reused with different content. That is common with app-local asset paths and editor-generated image URLs.
-- **HIGH**: "Skip images larger than 500KB" does not help stable-poll latency if size is only known after `fetch()` + `blob()`. The expensive network/read still happens.
-- **HIGH**: The plan does not mention negative-caching skipped or failed images. Without that, oversized/broken images will still be re-fetched every poll.
-- **MEDIUM**: A 50MB cap based on base64 string length understates actual JS heap use. Strings are typically more expensive than raw bytes.
-- **MEDIUM**: `invalidateSnapshotCache` only on target switch is incomplete. Reconnects, page reloads, or execution-context changes also matter, though lazy re-init will usually cover correctness.
-- **LOW**: Retaining base64 image data in page globals increases lifetime of potentially sensitive local content.
+- **MEDIUM**: Cache key is only `url → base64`. If the same URL serves changed content, stale images persist until invalidation.
+- **MEDIUM**: Plan does not say what happens on fetch/read failure. Without negative caching, broken images may be retried every poll forever.
+- **MEDIUM**: `invalidateSnapshotCache` only on target switch is incomplete. Page reloads, navigation, iframe/context replacement, CDP reconnects also reset browser globals.
+- **LOW**: 50MB LRU in browser memory — no estimate tying cap to expected snapshot sizes.
+- **LOW**: "Skip images larger than 500KB" — `blob.size` after full fetch still incurs download cost; `Content-Length` may not exist.
 
 **Suggestions:**
-- Cache three states, not just success: `ok`, `oversize`, and `failed`, so repeat polls skip all known outcomes.
-- Check `Content-Length` before reading the body when available; if absent, fall back to blob-size check.
-- Include a cheap freshness signal in the cache key or entry, such as `src + naturalWidth + naturalHeight`, or at minimum document the stale-URL tradeoff explicitly.
-- Track cache size using an approximate heap cost, not raw blob bytes.
-- Make cache init lazy inside `CAPTURE_SCRIPT`; do not rely on switch-time invalidation for correctness.
-- Add a timeout or abort path around image fetches so one slow asset cannot dominate snapshot latency.
+- Use lazy cache initialization inside CAPTURE_SCRIPT; treat server-side invalidation as cleanup, not correctness.
+- Define miss/error behavior explicitly: omit failed images without failing the whole capture; consider short-lived negative caching.
+- Record whether a skipped image was skipped by size pre-check or post-fetch to make telemetry meaningful.
+- Consider keying with `src + currentSrc` or including a lightweight freshness signal.
+- State clearly that cache reset is expected on execution-context loss and that this is acceptable.
 
-**Risk Assessment: MEDIUM**
+**Risk Assessment: MEDIUM.** Sound optimization but stale-cache and lifecycle assumptions could produce correctness bugs if not specified.
 
 ---
 
 ### Plan 05-02: CSS Collection Cache
 
-**Summary:** This plan targets a real bottleneck, but it has a more serious correctness gap than 05-01. The current server only treats HTML changes as snapshot changes, and the current full-snapshot client path assumes `/snapshot` returns actual CSS text. Returning `css: null` from the browser is therefore not enough by itself; the server must normalize snapshot state or full reloads will clear styles, and CSS-only changes may still never propagate.
+**Summary:** Attacks another real source of repeated work, but has a serious contract risk. The current `/snapshot` path returns `lastSnapshot` verbatim from memory in server.js. If `lastSnapshot.css` becomes `null`, full reloads in app.js will wipe dynamic CSS — a direct regression on reconnect.
 
 **Strengths:**
-- Correctly identifies that Phase 4's server-side CSS hash guard does not remove browser-side CSS collection cost.
-- Separates the fingerprint decision from the expensive rule concatenation, which is the right optimization shape.
-- Calls out the `allCSS.length` nullability bug in advance.
-- Keeps the adapter-local implementation consistent with the existing target structure.
+- Correctly targets `document.styleSheets` walk + rule concatenation in both adapters
+- Fingerprint-before-collect is the right optimization shape
+- Calls out the null-guard dependency in target stats logic
+- Keeps optimization localized to the adapter boundary
 
 **Concerns:**
-- **HIGH**: The proposed fingerprint for external sheets (`href + ruleCount`) is too weak. CSS can change while both values stay the same, producing stale styles indefinitely.
-- **HIGH**: The current poll loop hashes only `snapshot.html` in server.js. A pure CSS change will not increment `snapshotSeq` or broadcast anything.
-- **HIGH**: `/snapshot` currently returns `lastSnapshot` as-is. If `lastSnapshot.css` becomes `null`, the full-load path in app.js will clear the injected CSS.
-- **MEDIUM**: "Server uses last cached value" is not described concretely enough. That state must live server-side, not just in the browser cache, because clients can reconnect or force-refresh.
-- **MEDIUM**: Inline-sheet hashing via `textContent` may miss runtime stylesheet mutations done through CSSOM rather than DOM text updates.
-- **LOW**: The plan mixes an escaping-bug fix into the caching change, which increases change surface.
+- **HIGH**: The proposed server fix is insufficient. "Skip hash update and do not send CSS payload" does not address `/snapshot`, which returns `lastSnapshot` directly from memory in server.js.
+- **HIGH**: If `lastSnapshot.css` becomes `null`, full loads in app.js will set the style tag to `''` and wipe dynamic CSS.
+- **MEDIUM**: Fingerprint scheme may miss meaningful stylesheet changes. `href + ruleCount` can collide on same-URL, same-count, changed-content cases.
+- **MEDIUM**: Inaccessible sheets (cross-origin) — plan does not define whether they contribute to fingerprint. Unstable fingerprint for those sheets.
+- **LOW**: CSS caching assumes 05-01 invalidation clears CSS fingerprint too; this coupling is artificial. CSS caching should be independently correct.
 
 **Suggestions:**
-- Do not store `css: null` in `lastSnapshot`. Normalize on the server so the effective snapshot always has concrete CSS for `/snapshot`.
-- Separate two concepts: browser return contract (`cssChanged: false` or `css: undefined`) vs server stored snapshot (always keep effective CSS text for full reloads).
-- Change detection in the server from `hash(html)` to `hash(html + cssFingerprint)` or equivalent so CSS-only changes can publish.
-- Strengthen the fingerprint. For accessible same-origin stylesheets, hash rule text or a representative digest, not just `href + ruleCount`.
-- Apply the null/undefined contract consistently across both full snapshot and diff paths before shipping.
+- Make the server contract explicit: never persist `css: null` in `lastSnapshot`. Merge new snapshot with previous effective CSS before assigning server state.
+- Keep transport semantics consistent: full `/snapshot` always returns concrete effective CSS; diff/broadcast path uses `undefined` for unchanged.
+- Strengthen fingerprint: `href + ruleCount + disabled + mediaText` for external sheets.
+- Specify behavior for inaccessible cross-origin sheets.
+- Treat the double-backslash template literal fix as a separate bugfix, not a hidden dependency.
 
-**Risk Assessment: HIGH**
+**Risk Assessment: HIGH.** The `css: null` → `/snapshot` → style wipe regression path is concrete and confirmed by the current code.
 
 ---
 
 ### Plan 05-03: MutationObserver HTML Cache
 
-**Summary:** This plan can reduce stable-poll cost further, but it is substantially riskier and broader than the other two. It does not just optimize capture; it changes server state handling, WebSocket message types, and client UI telemetry in one step. The observer-based approach is plausible, but it will be noisy on real AI tool DOMs unless filtered carefully, and the current plan still has the same "full snapshot must carry effective CSS" issue if cached hits omit the field entirely.
+**Summary:** The core observer idea is viable and targets the remaining obvious stable-poll cost, but this plan mixes capture optimization with server protocol and client UI changes that are not required to meet the phase goal. It also carries the same `/snapshot` CSS null risk if the server contract is not fixed in 05-02.
 
 **Strengths:**
-- Uses the right primitive for DOM-change detection instead of repeatedly cloning and hashing unchanged markup.
-- Recognizes the target-specific difference between Claude's stable root and Antigravity's remount-prone container.
-- Includes invalidation/cleanup for observer globals, which is necessary for long-lived sessions.
-- Calls out the scroll staleness tradeoff explicitly instead of hiding it.
+- Targets the remaining obvious stable-poll cost: unconditional DOM cloning
+- Correctly differentiates observer attachment: `document.body` stable in Claude, container may remount in Antigravity
+- Includes cache invalidation cleanup including observer disconnect
+- Explicitly calls out scroll staleness as an acknowledged trade-off
 
 **Concerns:**
-- **HIGH**: Returning cached HTML while omitting `css` entirely is unsafe unless the server preserves prior effective CSS in `lastSnapshot`. Otherwise `/snapshot` full reloads can still clear styles.
-- **HIGH**: The observer will likely fire constantly on transient mutations: cursor state, streaming tokens, tooltips, selection changes, hidden panel churn, etc. Without filtering, cache hit rate may be poor.
-- **HIGH**: This plan expands scope into transport and UI (`stats_update`, stats bar indicator). That is not required to achieve the phase goal and raises rollout risk.
-- **MEDIUM**: `MutationObserver` does not capture all user-visible changes. Canvas, media frames, some form state, layout-only changes, and stylesheet changes can bypass it.
-- **MEDIUM**: Caching full HTML and meta in browser globals duplicates large strings in memory on top of server-side `lastSnapshot`.
-- **MEDIUM**: A `stats_update` message with no `seq` creates a second live-update channel beside the existing diff/full protocol, which increases client complexity.
-- **LOW**: The plan depends on 05-01/05-02, but also inherits their contract problems if those are not fixed first.
+- **HIGH**: This plan expands scope into `server.js` and `public/js/app.js` with `stats_update` and a new UI indicator — not required to achieve the capture optimization goal.
+- **HIGH**: Returning cached HTML while omitting `css` entirely is only safe if server-side state preserves prior effective CSS for `/snapshot`. The current `/snapshot` path still returns `lastSnapshot` verbatim.
+- **MEDIUM**: `MutationObserver` does not catch scroll-driven viewport changes. For a tool depending on visible chat state and virtualized lists, the "acceptable trade-off" may not hold.
+- **MEDIUM**: Browser-side caching of full HTML duplicates a large string already stored server-side as `lastSnapshot`, increasing memory pressure.
+- **MEDIUM**: A second WebSocket message type without `seq` creates a side channel beside the existing diff/full sequencing model.
+- **LOW**: Observer lifecycle is fragile in SPA UIs. CLEAR_SCRIPT must reset every initialization guard, not just the six listed globals.
 
 **Suggestions:**
-- Split this into two changes: capture optimization (observer + cached HTML/meta) vs telemetry/UI (`stats_update` and lightning indicator).
-- Keep `/snapshot` semantics stable: server-side stored snapshot should always contain effective HTML and CSS, even if the browser reports a cache hit.
-- Filter observer inputs aggressively: prefer `childList`, `subtree`, and targeted `characterData`; avoid broad attribute observation unless there is evidence it is needed.
-- Add a fallback periodic full recapture, even on "clean" polls, to protect against observer blind spots.
-- Measure observer hit rate before adding UI plumbing. If hits are rare, the extra protocol work is not justified.
-- Re-evaluate whether this plan is needed to hit `<200ms stable poll` after 05-01 and 05-02 are implemented correctly.
+- Split into two changes: capture optimization (observer + dirty flag + cached HTML/meta in adapters) vs optional telemetry/UI (`stats_update` + lightning indicator).
+- Define strict invalidation triggers: not just target switch, but also context reset, navigation, and observed element replacement.
+- Re-evaluate the scroll tradeoff against Antigravity virtualization — if scroll changes visible DOM without mutation, stable-poll cache hits may return stale viewport HTML.
+- Keep server semantics simple: preserve previous effective snapshot server-side on cache hit.
+- Add explicit memory limits for cached HTML/meta.
 
-**Risk Assessment: HIGH**
+**Risk Assessment: HIGH.** Core observer idea is viable but scope creep creates unnecessary surface area, and the CSS/snapshot contract dependency makes it fragile.
 
 ---
 
 ## Consensus Summary
 
-### Agreed Strengths
-- **Layered optimization ordering is correct** (images → CSS → DOM) — both reviewers note the sequencing is well-reasoned.
-- **Browser-side cache via `Runtime.evaluate` globals is the right approach** — fits the existing CDP model cleanly.
-- **Timing stats (imgMs, cssMs, cached)** are valuable for measuring phase success and both reviewers approve.
-- **Antigravity detached-node handling** (container replacement guard in 05-03) was noted as well-designed by both.
-- **Plan 05-01 is the strongest plan** — both reviewers rate it as the most ready for implementation.
+### Agreed Strengths (2+ reviewers)
+- **Layered optimization ordering (images → CSS → DOM)** is correct — all 3 reviewers note the sequencing is well-reasoned
+- **Browser-side cache via `Runtime.evaluate` globals** is the right approach for CDP injection architecture
+- **LRU at 50MB** is a reasonable safeguard — all 3 note it as appropriate
+- **Timing stats (imgMs, cssMs, cached)** make the phase goal measurable — all 3 approve
+- **Antigravity detached-node reconnect guard** in 05-03 is well-designed — all 3 note it
+- **Plan 05-01 is the lowest-risk, best-scoped plan** — all 3 reviewers agree it should go first
 
 ### Agreed Concerns (Highest Priority)
 
-1. **CSS fingerprint weakness** (05-02 — raised by both):
-   - Codex: HIGH — `href + ruleCount` too weak, CSSOM changes not detected
-   - Gemini: MEDIUM — ruleCount may miss in-place rule mutations
-   - **Consensus action**: Strengthen fingerprint or at minimum document the limitation as acceptable for static AI chat UIs.
+1. **CSS fingerprint weakness for external sheets** — `href + ruleCount` is too weak (all 3 reviewers)
+   - Claude CLI: HIGH — ruleCount stays the same when values change inside a rule
+   - Codex: MEDIUM — same-URL same-count changed-content collision
+   - Gemini: MEDIUM — CSS variable changes won't be detected
+   - **Consensus action**: Strengthen to `href + ruleCount + cssRules[0]?.cssText.slice(0, 64)` or similar
 
-2. **`/snapshot` full-reload will clear styles if `css: null` stored in lastSnapshot** (05-02/05-03):
-   - Codex: HIGH — server must normalize so lastSnapshot always has effective CSS text
-   - Gemini: MEDIUM — omitting css field may confuse handlers expecting fixed structure
-   - **Consensus action**: Server must keep effective CSS in `lastSnapshot` regardless of null returns; never persist null CSS to server state.
+2. **`/snapshot` full-reload will clear styles if `css: null` stored in lastSnapshot** (05-02/05-03) — Codex + Claude CLI
+   - Both reviewers independently identified the concrete regression: `lastSnapshot.css = null` → client reconnects → `/snapshot` returns null CSS → `styleTag.textContent = ''` → styles wiped
+   - Gemini did not model this path
+   - **Consensus action**: Server MUST never persist `null` in `lastSnapshot.css`; normalize to prior effective CSS before assigning
 
-3. **Scroll staleness on idle polls** (05-03):
-   - Gemini: HIGH — user scrolls on desktop, phone stays stale until DOM mutation
-   - Codex: implicit in MutationObserver blind spots (MEDIUM)
-   - **Consensus action**: Add `scrollY/scrollX` check to dirty detection, or accept and document explicitly with a note in PLAN.md.
+3. **URL-only image cache key can serve stale content** (05-01) — Claude CLI + Codex
+   - Both note that same URL with changed content (e.g. avatar, chart) returns stale base64 indefinitely
+   - Gemini did not raise this
+   - **Consensus action**: Document the trade-off explicitly OR add `naturalWidth + naturalHeight` as cheap freshness signal
 
-4. **50MB cache cap understates actual heap cost** (05-01):
-   - Both reviewers note strings in JS are UTF-16 / more expensive than raw bytes
-   - **Consensus action**: Consider using ~25MB effective cap or count string `.length * 2` bytes.
+4. **Scroll staleness on idle polls** (05-03) — Gemini + Codex
+   - If desktop scrolls without any DOM mutation, phone viewport stays frozen
+   - **Consensus action**: Add `scrollY/scrollX` change check to dirty detection, or document explicitly with a note that scroll-only updates require a DOM mutation to sync
+
+5. **MutationObserver config must be explicitly specified** (05-03) — Claude CLI (HIGH, unique)
+   - Missing `subtree: true` = child mutations not caught; missing `characterData: true` = typing not caught
+   - A wrong config causes silent cache hits on real DOM changes — worst failure mode
+   - **Consensus action**: Add exact config object to plan: `{ subtree: true, childList: true, characterData: true, attributes: true }` (or justify exclusions)
 
 ### Divergent Views
 
-- **Codex rates 05-02 and 05-03 as HIGH risk overall**; Gemini rates them LOW-MEDIUM. The divergence is primarily around the `/snapshot` full-reload CSS contract — Codex identified a concrete regression path (reconnect → `/snapshot` → `lastSnapshot.css = null` → client clears styles), Gemini did not model this scenario.
-- **Codex flags scope creep in 05-03** (stats_update, lightning indicator); Gemini considers it a positive feature. Codex's concern is about rollout risk and measurable ROI before adding protocol complexity.
-- **Codex suggests negative-caching oversize/failed images** (05-01); Gemini did not raise this. Worth addressing — it's a real gap for repeated polls with consistently failed images.
+| Topic | Gemini | Claude CLI | Codex |
+|-------|--------|------------|-------|
+| **05-02 overall risk** | LOW-MEDIUM | MEDIUM | **HIGH** |
+| **05-03 overall risk** | LOW | MEDIUM | **HIGH** |
+| **Scope creep in 05-03** | Positive feature | Low risk, noted | HIGH concern |
+| **`/snapshot` CSS null** | Not raised | Implicit | Central HIGH concern |
+| **MutationObserver config** | Not raised | **HIGH gap** | Not raised |
+| **Negative caching for failures** | Not raised | LOW note | MEDIUM concern |
+
+**Where to focus**: Codex's `/snapshot` null-CSS regression is the highest-consequence divergence — Gemini missed it, Claude CLI partially noted it. Codex's analysis is confirmed by reading the actual code paths referenced. **Treat this as HIGH.**
 
 ---
 
