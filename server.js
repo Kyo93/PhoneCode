@@ -1335,6 +1335,10 @@ async function initCDP() {
         try {
             const conn = await connectCDP(targets.antigravity.url);
             cdpConnections.set('antigravity', { ...targets.antigravity, ...conn });
+            // Clear stale browser globals from prior server session (Plan 05-04 gap fix).
+            // Must call AFTER cdpConnections.set so the stored connection object is complete.
+            // Optional chaining guards the case where 05-01 plan has not yet been deployed.
+            TARGETS['antigravity']?.invalidateSnapshotCache?.(cdpConnections.get('antigravity')).catch(() => {});
             console.log(`✅ Connected to Antigravity! (${conn.contexts.length} contexts)`);
         } catch (e) {
             console.error(`❌ Failed to connect to Antigravity: ${e.message}`);
@@ -1347,6 +1351,8 @@ async function initCDP() {
         try {
             const conn = await connectCDP(targets.claude.url);
             cdpConnections.set('claude', { ...targets.claude, ...conn });
+            // Clear stale browser globals from prior server session (Plan 05-04 gap fix).
+            TARGETS['claude']?.invalidateSnapshotCache?.(cdpConnections.get('claude')).catch(() => {});
             console.log(`✅ Connected to Claude Extension! (${conn.contexts.length} contexts)`);
         } catch (e) {
             console.error(`❌ Failed to connect to Claude: ${e.message}`);
