@@ -15,7 +15,7 @@ PhoneCode is a mature, working tool. The roadmap focuses on hardening the existi
 - [ ] **Phase 2: Tech Debt Refactoring** - Modularize server.js and improve code structure
 - [ ] **Phase 3: Mobile UX Improvements** - Better scroll sync, gesture support, and UI polish
 - [ ] **Phase 4: Snapshot Diffing** - Incremental diff-based snapshot updates to cut bandwidth 80–95%
-- [ ] **Phase 5: Capture Pipeline Optimization** - Cache images and CSS inside browser context to cut snapshot capture time 60–90%
+- [x] **Phase 5: Capture Pipeline Optimization** - Cache images and CSS inside browser context to cut snapshot capture time 60–90%
 
 ## Phase Details
 
@@ -87,7 +87,7 @@ Plans:
 Plans:
 - [x] 05-01-PLAN.md — Image cache: `window.__phoneCodeImgCache`, skip >500KB, `invalidateSnapshotCache()` export
 - [x] 05-02-PLAN.md — CSS cache: strengthened fingerprint, null CSS server contract fix, `window.__phoneCodeCSSFingerprint`
-- [ ] 05-03-PLAN.md — MutationObserver cache: skip clone when DOM unchanged, `stats_update` WS, `⚡` indicator
+- [x] 05-03-PLAN.md — MutationObserver cache: skip clone when DOM unchanged, `stats_update` WS, `⚡` indicator
 
 **Goal**: Improve the mobile interaction quality — faster scroll sync, better visual feedback for connection state, and smoother handling of long sessions.
 **Depends on**: Phase 2 (cleaner codebase makes frontend changes safer)
