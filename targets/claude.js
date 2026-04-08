@@ -177,6 +177,28 @@ export async function captureSnapshot(cdp) {
     return null;
 }
 
+// Invalidate browser-side image and CSS caches (called on target switch or CDP reconnect).
+// Safe to call before Plan 05-02 is deployed — CSS globals default to undefined/null.
+export async function invalidateSnapshotCache(cdp) {
+    const CLEAR_SCRIPT = `
+        if (window.__phoneCodeImgCache) window.__phoneCodeImgCache.clear();
+        window.__phoneCodeImgCacheBytes = 0;
+        if (window.__phoneCodeCSSFingerprint !== undefined) {
+            window.__phoneCodeCSSFingerprint = null;
+            window.__phoneCodeCSSCache = null;
+        }
+    `;
+    for (const ctx of cdp.contexts) {
+        try {
+            await cdp.call("Runtime.evaluate", {
+                expression: CLEAR_SCRIPT,
+                returnByValue: false,
+                contextId: ctx.id
+            });
+        } catch(e) {}
+    }
+}
+
 // Inject message into Claude Code
 // UI lives inside <iframe id="active-frame"> - must use contentDocument to access it
 // Input is <div contenteditable="plaintext-only">, not the "true" value Antigravity uses
