@@ -97,21 +97,62 @@ export async function captureSnapshot(cdp) {
             });
         } catch (globalErr) { }
 
-        // Convert local images to base64
+        // Convert local images to base64 — persistent LRU cache (max 50MB base64 bytes).
+        // CACHE KEY: URL only. Same URL with changed content returns stale base64 until cache clear.
+        // Acceptable: VS Code/Claude Code images are static icons/logos — URL stability holds.
+        // FETCH ERRORS: catch(e){} + reader.onerror omit the image silently. No negative caching.
+        //   Image retried on next poll — transient errors self-heal.
+        // MEMORY: base64 is ~33% larger than binary; effective binary ceiling ~37MB at 50MB cap.
+        if (!window.__phoneCodeImgCache) {
+            window.__phoneCodeImgCache = new Map();
+            window.__phoneCodeImgCacheBytes = 0;
+        }
+        const imgCache = window.__phoneCodeImgCache;
+        const IMG_CACHE_MAX_BYTES = 50 * 1024 * 1024; // 50MB cap (base64 string bytes)
+
         const images = clone.querySelectorAll('img');
         const promises = Array.from(images).map(async (img) => {
             const rawSrc = img.getAttribute('src');
-            if (rawSrc && (rawSrc.startsWith('/') || rawSrc.startsWith('vscode-file:')) && !rawSrc.startsWith('data:')) {
-                try {
-                    const res = await fetch(rawSrc);
-                    const blob = await res.blob();
-                    await new Promise(r => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => { img.src = reader.result; r(); };
-                        reader.onerror = () => r();
-                        reader.readAsDataURL(blob);
-                    });
-                } catch(e) {}
+            if (!rawSrc || rawSrc.startsWith('data:')) return;
+            if (!rawSrc.startsWith('/') && !rawSrc.startsWith('vscode-file:')) return;
+
+            // Cache hit: refresh LRU position (delete + re-set moves entry to end of Map)
+            if (imgCache.has(rawSrc)) {
+                const cached = imgCache.get(rawSrc);
+                imgCache.delete(rawSrc);
+                imgCache.set(rawSrc, cached);
+                img.src = cached;
+                return;
+            }
+
+            try {
+                const res = await fetch(rawSrc);
+                // Size check 1: Content-Length header (avoids full download for oversized resources)
+                const contentLength = res.headers.get('content-length');
+                if (contentLength && parseInt(contentLength) > 512000) return;
+                const blob = await res.blob();
+                // Size check 2: actual blob size (Content-Length may be absent or inaccurate)
+                if (blob.size > 512000) return;
+                await new Promise(r => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        const result = reader.result;
+                        imgCache.set(rawSrc, result);
+                        window.__phoneCodeImgCacheBytes += result.length;
+                        // Evict oldest entries until under cap (O(n) over cache size, acceptable at <50 images)
+                        while (window.__phoneCodeImgCacheBytes > IMG_CACHE_MAX_BYTES && imgCache.size > 0) {
+                            const oldest = imgCache.keys().next().value;
+                            window.__phoneCodeImgCacheBytes -= imgCache.get(oldest).length;
+                            imgCache.delete(oldest);
+                        }
+                        img.src = result;
+                        r();
+                    };
+                    reader.onerror = () => r(); // FileReader error: omit image, no crash
+                    reader.readAsDataURL(blob);
+                });
+            } catch(e) {
+                // Fetch failure (network, CORS): omit image silently. No negative caching — retry next poll.
             }
         });
         await Promise.all(promises);
