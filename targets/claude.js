@@ -128,23 +128,66 @@ export async function captureSnapshot(cdp) {
 
         const html = clone.outerHTML;
 
-        const rules = [];
-        for (const sheet of document.styleSheets) {
+        // CSS fingerprint — detects stylesheet add/remove and content changes.
+        // External sheets: href + ruleCount + first-rule sample (64 chars).
+        //   ruleCount alone misses in-place value changes (CSS variables, color tweaks) without
+        //   adding or removing rules. First-rule sample provides cheap collision discriminator.
+        // Inline <style>: hash ownerNode.textContent to catch any content change.
+        // Cross-origin sheets (SecurityError on cssRules): caught below → '|blocked:N' (stable
+        //   by sheet index). Acceptable: cross-origin rules can't be collected either, so their
+        //   CSS contribution is always empty regardless of fingerprint outcome.
+        const tCss0 = performance.now();
+        const cssFingerprint = Array.from(document.styleSheets).reduce((acc, s, i) => {
             try {
-                for (const rule of sheet.cssRules) {
-                    let text = rule.cssText;
-                    // Strip fixed/absolute positioning and high z-index to prevent overlays blocking phone touch
-                    text = text
-                        .replace(/position\s*:\s*fixed/gi, 'position: relative')
-                        .replace(/position\s*:\s*sticky/gi, 'position: relative')
-                        .replace(/z-index\s*:\s*\d{3,}/gi, 'z-index: 1')
-                        .replace(/height\s*:\s*100vh/gi, 'height: auto')
-                        .replace(/min-height\s*:\s*100vh/gi, 'min-height: 0');
-                    rules.push(text);
+                if (s.href) {
+                    // External stylesheet: href + rule count + first-rule content sample.
+                    const firstRule = s.cssRules.length > 0 ? s.cssRules[0].cssText.slice(0, 64) : '';
+                    return acc + '|' + s.href + ':' + s.cssRules.length + ':' + firstRule;
+                } else {
+                    // Inline <style>: hash content to avoid collision when rule counts match.
+                    const content = s.ownerNode?.textContent || '';
+                    let h = 0;
+                    for (let j = 0; j < content.length; j++) {
+                        h = (Math.imul(31, h) + content.charCodeAt(j)) | 0;
+                    }
+                    return acc + '|inline' + i + ':' + h;
                 }
-            } catch (e) { }
+            } catch(e) {
+                // Cross-origin sheet or other access error — stable index-based fingerprint.
+                // CSS collection also skips these sheets (same SecurityError), so output is unaffected.
+                return acc + '|blocked:' + i;
+            }
+        }, '');
+
+        let allCSS;
+        if (cssFingerprint === window.__phoneCodeCSSFingerprint && window.__phoneCodeCSSCache) {
+            // Stylesheets unchanged — signal cache hit by returning null. Server keeps prior CSS.
+            allCSS = null;
+        } else {
+            // Fingerprint changed (or first poll) — collect all CSS rules.
+            const rules = [];
+            for (const sheet of document.styleSheets) {
+                try {
+                    for (const rule of sheet.cssRules) {
+                        let text = rule.cssText;
+                        // NOTE: Use \\s and \\d (double-backslash) inside template literal.
+                        // Single \s becomes literal 's' when the string is evaluated — regex broken.
+                        // This also fixes a pre-existing escaping bug in the original claude.js code.
+                        text = text
+                            .replace(/position\s*:\s*fixed/gi, 'position: relative')
+                            .replace(/position\s*:\s*sticky/gi, 'position: relative')
+                            .replace(/z-index\s*:\s*\d{3,}/gi, 'z-index: 1')
+                            .replace(/height\s*:\s*100vh/gi, 'height: auto')
+                            .replace(/min-height\s*:\s*100vh/gi, 'min-height: 0');
+                        rules.push(text);
+                    }
+                } catch(e) {}
+            }
+            allCSS = rules.join('\\n');
+            window.__phoneCodeCSSFingerprint = cssFingerprint;
+            window.__phoneCodeCSSCache = allCSS;
         }
-        const allCSS = rules.join('\\n');
+        const cssMs = Math.round(performance.now() - tCss0);
 
         return {
             html,
@@ -156,10 +199,12 @@ export async function captureSnapshot(cdp) {
             stats: {
                 nodes: clone.getElementsByTagName('*').length,
                 htmlSize: html.length,
-                cssSize: allCSS.length,
+                cssSize: allCSS ? allCSS.length : 0,  // null-guard: allCSS is null on cache hit
                 imgMs,
                 imgCached: Array.from(images).filter(i => imgCache.has(i.getAttribute('src'))).length,
-                imgTotal: images.length
+                imgTotal: images.length,
+                cssMs,
+                cssCached: allCSS === null   // true = cache hit, false = re-collected
             }
         };
     })()`;
