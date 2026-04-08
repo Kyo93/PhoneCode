@@ -2013,6 +2013,17 @@ async function main() {
             }
             
             console.log(`🔄 Switching target to: ${target}`);
+
+            // Clear browser-side image/CSS cache for the target being switched away from.
+            // Must run BEFORE currentTarget changes — otherwise TARGETS[currentTarget] is the new target.
+            const prevTargetModule = TARGETS[currentTarget];
+            if (prevTargetModule?.invalidateSnapshotCache) {
+                const prevCdp = cdpConnections.get(currentTarget);
+                if (prevCdp) {
+                    prevTargetModule.invalidateSnapshotCache(prevCdp).catch(() => {});
+                }
+            }
+
             currentTarget = target;
             lastSnapshot = null; // Force clear
             lastSnapshotHash = null;
