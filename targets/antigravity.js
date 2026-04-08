@@ -320,6 +320,16 @@ export async function invalidateSnapshotCache(cdp) {
             window.__phoneCodeCSSFingerprint = null;
             window.__phoneCodeCSSCache = null;
         }
+        // Disconnect MutationObserver and clear all HTML cache globals.
+        // __phoneCodeObserver guard must be reset so next poll re-attaches to the correct element.
+        if (window.__phoneCodeObserver) {
+            window.__phoneCodeObserver.disconnect();
+            window.__phoneCodeObserver = null;
+        }
+        window.__phoneCodeObservedEl = null;
+        window.__phoneCodeMutDirty = true;   // force full capture on next poll after invalidation
+        window.__phoneCodeLastHTML = null;
+        window.__phoneCodeLastMeta = null;
     `;
     for (const ctx of cdp.contexts) {
         try {
