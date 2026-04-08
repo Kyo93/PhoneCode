@@ -85,7 +85,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — Image cache: `window.__phoneCodeImgCache`, skip >500KB, `invalidateSnapshotCache()` export
+- [x] 05-01-PLAN.md — Image cache: `window.__phoneCodeImgCache`, skip >500KB, `invalidateSnapshotCache()` export
 - [ ] 05-02-PLAN.md — CSS cache: strengthened fingerprint, null CSS server contract fix, `window.__phoneCodeCSSFingerprint`
 - [ ] 05-03-PLAN.md — MutationObserver cache: skip clone when DOM unchanged, `stats_update` WS, `⚡` indicator
 
