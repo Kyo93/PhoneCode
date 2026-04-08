@@ -35,6 +35,46 @@ export async function captureSnapshot(cdp) {
         const cascade = document.body;
         if (!cascade) return { error: 'document.body not found' };
 
+        // --- MutationObserver HTML cache ---
+        // CONFIG RATIONALE:
+        //   subtree: true     — mutations in any descendant trigger dirty (not just direct children)
+        //   childList: true   — node insertions/removals (new messages, DOM updates)
+        //   characterData: true — text content changes (streaming tokens, typing)
+        //   attributes: true  — attribute changes (data-state, aria-*, class, hidden, style, src)
+        // No attributeFilter: observe ALL attributes — prevents missed state changes from custom
+        // data-* attributes used by React/VS Code components.
+        //
+        // FIRST-POLL BEHAVIOR: __phoneCodeLastHTML is null on init → early-return condition is
+        // always false on first poll → full capture always runs regardless of dirty flag.
+        if (!window.__phoneCodeObserver) {
+            window.__phoneCodeMutDirty = true;     // ensure first poll is never a cache hit
+            window.__phoneCodeLastHTML = null;
+            window.__phoneCodeLastMeta = null;
+            window.__phoneCodeObserver = new MutationObserver(() => {
+                window.__phoneCodeMutDirty = true;
+            });
+            window.__phoneCodeObserver.observe(document.body, {
+                subtree: true,
+                childList: true,
+                characterData: true,
+                attributes: true
+            });
+        }
+
+        // Early return on cache hit: all three conditions must hold.
+        // __phoneCodeLastHTML being null (first poll) makes this false regardless of dirty flag.
+        if (!window.__phoneCodeMutDirty && window.__phoneCodeLastHTML && window.__phoneCodeLastMeta) {
+            return {
+                html: window.__phoneCodeLastHTML,
+                // Omit css field entirely on cache hits — server keeps lastBroadcastCssHash stable.
+                // Do NOT return css: null (that is a different signal meaning "CSS unchanged, send nothing").
+                // Omitting the field entirely means: "this is a full cache hit, use prior CSS as-is".
+                ...window.__phoneCodeLastMeta,
+                stats: { ...window.__phoneCodeLastMeta.stats, cached: true }
+            };
+        }
+        window.__phoneCodeMutDirty = false;
+
         const cascadeStyles = window.getComputedStyle(cascade);
 
         const scrollContainer = cascade.querySelector('.overflow-y-auto, [data-scroll-area]') || cascade;
@@ -189,9 +229,8 @@ export async function captureSnapshot(cdp) {
         }
         const cssMs = Math.round(performance.now() - tCss0);
 
-        return {
-            html,
-            css: allCSS,
+        window.__phoneCodeLastHTML = html;
+        window.__phoneCodeLastMeta = {
             backgroundColor: cascadeStyles.backgroundColor,
             color: cascadeStyles.color,
             fontFamily: cascadeStyles.fontFamily,
@@ -199,13 +238,24 @@ export async function captureSnapshot(cdp) {
             stats: {
                 nodes: clone.getElementsByTagName('*').length,
                 htmlSize: html.length,
-                cssSize: allCSS ? allCSS.length : 0,  // null-guard: allCSS is null on cache hit
+                cssSize: allCSS ? allCSS.length : 0,
                 imgMs,
                 imgCached: Array.from(images).filter(i => imgCache.has(i.getAttribute('src'))).length,
                 imgTotal: images.length,
                 cssMs,
-                cssCached: allCSS === null   // true = cache hit, false = re-collected
+                cssCached: allCSS === null,
+                cached: false
             }
+        };
+
+        return {
+            html,
+            css: allCSS,
+            backgroundColor: cascadeStyles.backgroundColor,
+            color: cascadeStyles.color,
+            fontFamily: cascadeStyles.fontFamily,
+            scrollInfo,
+            stats: window.__phoneCodeLastMeta.stats
         };
     })()`;
 
