@@ -188,15 +188,42 @@ export async function captureSnapshot(cdp) {
 
         const html = clone.outerHTML;
 
-        const rules = [];
-        for (const sheet of document.styleSheets) {
+        // CSS fingerprint cache — avoid re-collecting unchanged stylesheets.
+        // External sheets: href + rule count + first-rule sample (catches in-place value changes).
+        // Cross-origin blocked sheets: '|blocked:N' stable fingerprint — their CSS is always empty.
+        const tCss0 = performance.now();
+        const cssFingerprint = Array.from(document.styleSheets).reduce((acc, s, i) => {
             try {
-                for (const rule of sheet.cssRules) {
-                    rules.push(rule.cssText);
+                if (s.href) {
+                    const firstRule = s.cssRules.length > 0 ? s.cssRules[0].cssText.slice(0, 64) : '';
+                    return acc + '|' + s.href + ':' + s.cssRules.length + ':' + firstRule;
                 }
-            } catch (e) { }
+                const content = s.ownerNode?.textContent || '';
+                let h = 0;
+                for (let j = 0; j < content.length; j++) {
+                    h = (Math.imul(31, h) + content.charCodeAt(j)) | 0;
+                }
+                return acc + '|inline' + i + ':' + h;
+            } catch(e) { return acc + '|blocked:' + i; }
+        }, '');
+
+        let allCSS;
+        if (cssFingerprint === window.__phoneCodeCSSFingerprint && window.__phoneCodeCSSCache) {
+            allCSS = null; // Cache hit — server preserves prior effective CSS (see server.js Task 1 fix)
+        } else {
+            const rules = [];
+            for (const sheet of document.styleSheets) {
+                try {
+                    for (const rule of sheet.cssRules) {
+                        rules.push(rule.cssText);
+                    }
+                } catch(e) {}
+            }
+            allCSS = rules.join('\\n');
+            window.__phoneCodeCSSFingerprint = cssFingerprint;
+            window.__phoneCodeCSSCache = allCSS;
         }
-        const allCSS = rules.join('\\n');
+        const cssMs = Math.round(performance.now() - tCss0);
 
         return {
             html,
@@ -208,10 +235,12 @@ export async function captureSnapshot(cdp) {
             stats: {
                 nodes: clone.getElementsByTagName('*').length,
                 htmlSize: html.length,
-                cssSize: allCSS.length,
+                cssSize: allCSS ? allCSS.length : 0,  // null-guard: allCSS is null on cache hit
                 imgMs,
                 imgCached: Array.from(images).filter(i => imgCache.has(i.getAttribute('src'))).length,
-                imgTotal: images.length
+                imgTotal: images.length,
+                cssMs,
+                cssCached: allCSS === null   // true = cache hit, false = re-collected
             }
         };
     })()`;

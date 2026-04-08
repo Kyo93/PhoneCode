@@ -1404,13 +1404,26 @@ async function startPolling(wss) {
                 if (hash !== lastSnapshotHash) {
                     const prevHtml = lastSnapshot ? lastSnapshot.html : null;
                     const fullBytes = Buffer.byteLength(snapshot.html, 'utf8');
-                    lastSnapshot = snapshot;
+
+                    // CSS null-guard (Plan 05-02): browser returns snapshot.css=null when CSS cache hits.
+                    // Hard contract: lastSnapshot.css must NEVER be null — GET /snapshot serves lastSnapshot
+                    // verbatim to reconnecting clients. A null CSS causes styleTag.textContent = '' → styles wiped.
+                    // Normalize to prior effective CSS before any processing.
+                    const effectiveCSS = snapshot.css !== null
+                        ? snapshot.css
+                        : (lastSnapshot?.css ?? '');
+
+                    lastSnapshot = {
+                        ...snapshot,
+                        css: effectiveCSS   // never null — always concrete CSS text from current or prior poll
+                    };
                     lastSnapshotHash = hash;
                     snapshotSeq++;
 
-                    // CSS: only include in broadcast if content changed since last send
-                    const newCssHash = snapshot.css ? snapshot.css.length + ':' + snapshot.css.slice(0, 64) : '';
-                    const cssPayload = (newCssHash !== lastBroadcastCssHash) ? snapshot.css : undefined;
+                    const newCssHash = effectiveCSS
+                        ? effectiveCSS.length + ':' + effectiveCSS.slice(0, 64)
+                        : '';
+                    const cssPayload = (newCssHash !== lastBroadcastCssHash) ? effectiveCSS : undefined;
                     if (cssPayload !== undefined) lastBroadcastCssHash = newCssHash;
 
                     let message;
