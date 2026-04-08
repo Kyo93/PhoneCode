@@ -15,6 +15,7 @@ import { inspectUI } from './ui_inspector.js';
 import { execSync } from 'child_process';
 import * as antigravity from './targets/antigravity.js';
 import * as claude from './targets/claude.js';
+import { computeSnapshotDiff, invalidateDiffCache } from './lib/snapshot-diff.js';
 
 // Target registry — add new targets here only
 const TARGETS = { antigravity, claude };
@@ -36,6 +37,8 @@ let cdpConnections = new Map(); // targetKey -> { port, url, ws, call, contexts 
 let currentTarget = 'antigravity';
 let lastSnapshot = null;
 let lastSnapshotHash = null;
+let snapshotSeq = 0;          // Monotonic counter; increments on every snapshot update
+let lastBroadcastCssHash = ''; // Hash of CSS last sent to clients; avoid resending unchanged CSS
 
 // Kill any existing process on the server port (prevents EADDRINUSE)
 function killPortProcess(port) {
@@ -1351,6 +1354,16 @@ async function initCDP() {
     }
 }
 
+// Diff stats accumulator — logged every 60s to track bandwidth savings
+const diffStats = { diffCount: 0, fullCount: 0, savedBytes: 0 };
+
+setInterval(() => {
+    const total = diffStats.diffCount + diffStats.fullCount;
+    if (total === 0) return;
+    const pct = Math.round(diffStats.diffCount / total * 100);
+    console.log(`[DIFF] ${total} updates: ${pct}% diffs, ${diffStats.fullCount} full resyncs, ${Math.round(diffStats.savedBytes / 1024)}KB saved total`);
+}, 60_000);
+
 // Background polling
 async function startPolling(wss) {
     let lastErrorLog = 0;
@@ -1389,20 +1402,51 @@ async function startPolling(wss) {
 
                 // Only update if content changed
                 if (hash !== lastSnapshotHash) {
+                    const prevHtml = lastSnapshot ? lastSnapshot.html : null;
+                    const fullBytes = Buffer.byteLength(snapshot.html, 'utf8');
                     lastSnapshot = snapshot;
                     lastSnapshotHash = hash;
+                    snapshotSeq++;
 
-                    // Broadcast to all connected clients
+                    // CSS: only include in broadcast if content changed since last send
+                    const newCssHash = snapshot.css ? snapshot.css.length + ':' + snapshot.css.slice(0, 64) : '';
+                    const cssPayload = (newCssHash !== lastBroadcastCssHash) ? snapshot.css : undefined;
+                    if (cssPayload !== undefined) lastBroadcastCssHash = newCssHash;
+
+                    let message;
+                    if (prevHtml && wss.clients.size > 0) {
+                        const result = computeSnapshotDiff(prevHtml, snapshot.html);
+                        // Use diff only if under absolute 30KB cap — percentage threshold doesn't
+                        // map to fixed bandwidth targets and can allow large diffs on big pages
+                        if (result && result.sizeBytes < 30_000) {
+                            message = JSON.stringify({
+                                type: 'snapshot_diff',
+                                diff: result.diff,
+                                css: cssPayload,        // undefined = unchanged, client keeps existing
+                                seq: snapshotSeq,
+                            });
+                            diffStats.diffCount++;
+                            diffStats.savedBytes += fullBytes - result.sizeBytes;
+                            console.log(`📸 Diff seq=${snapshotSeq} ${result.sizeBytes}B / ${fullBytes}B (${Math.round((1 - result.sizeBytes / fullBytes) * 100)}% saved, ${result.latencyMs}ms)`);
+                        }
+                    }
+
+                    if (!message) {
+                        // Fall back to full snapshot notification — client fetches /snapshot
+                        message = JSON.stringify({
+                            type: 'snapshot_update',
+                            seq: snapshotSeq,
+                            timestamp: new Date().toISOString()
+                        });
+                        diffStats.fullCount++;
+                        console.log(`📸 Full seq=${snapshotSeq} ${fullBytes}B`);
+                    }
+
                     wss.clients.forEach(client => {
                         if (client.readyState === WebSocket.OPEN) {
-                            client.send(JSON.stringify({
-                                type: 'snapshot_update',
-                                timestamp: new Date().toISOString()
-                            }));
+                            client.send(message);
                         }
                     });
-
-                    console.log(`📸 Snapshot updated(hash: ${hash})`);
                 }
             } else {
                 // Snapshot is null or has error
@@ -1537,7 +1581,7 @@ async function createServer() {
             return res.status(503).json({ error: 'No snapshot available yet' });
         }
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.json(lastSnapshot);
+        res.json({ ...lastSnapshot, seq: snapshotSeq });
     });
 
     // Chat status (is a chat open in the current target?)
@@ -1972,6 +2016,8 @@ async function main() {
             currentTarget = target;
             lastSnapshot = null; // Force clear
             lastSnapshotHash = null;
+            invalidateDiffCache();
+            lastBroadcastCssHash = '';
 
             // Trigger immediate discovery attempt if not connected
             if (!cdpConnections.has(target)) {

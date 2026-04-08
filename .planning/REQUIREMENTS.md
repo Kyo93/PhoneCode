@@ -62,7 +62,24 @@ The mobile experience must remain smooth during long sessions and feel responsiv
 
 ---
 
-## Non-Functional Requirements
+## REQ-05: Snapshot Diffing
+
+**Priority**: High
+**Phase**: 4 (Snapshot Diffing)
+
+Snapshot broadcasts must switch from full-HTML replacement to incremental diff patches to reduce mobile bandwidth consumption.
+
+### Acceptance Criteria
+- Server-side diff computed between consecutive snapshots using a DOM-aware diffing algorithm
+- Client receives full snapshot only on first connect; subsequent updates are patch objects
+- Patch application on client preserves scroll position and interactive state (no full iframe reload)
+- Bandwidth per update is ≤20KB on a typical Claude Code session (measured, not estimated)
+- Fallback: client requests full snapshot if diff application fails or patch sequence is broken
+- No visual regression compared to current full-replace behavior
+
+---
+
+
 
 ### Performance
 - Snapshot polling: 1s interval (hardcoded, acceptable for single-user tool)

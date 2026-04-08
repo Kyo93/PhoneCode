@@ -1,177 +1,174 @@
 # External Integrations
 
-**Analysis Date:** 2026-04-07
+**Analysis Date:** 2026-04-08
 
 ## APIs & External Services
 
 **Chrome DevTools Protocol (CDP):**
-- Local debugging protocol for browser automation
-- Targets: Antigravity chat UI (port 9000) and Claude Code VS Code extension (ports 9000-9003)
-- SDK/Client: Native WebSocket via `ws` package
-- Purpose: Remote DOM inspection, JavaScript execution, event triggering, snapshot capture
-- Connection: `connectCDP()` in `server.js` establishes WebSocket to chrome://inspect targets
+- Service: Browser debugging protocol for Antigravity and Claude Code extension
+  - Client: WebSocket-based, native to `ws` package
+  - Discovery: Polls `/json/list` endpoint on ports 9000-9003
+  - Auth: No explicit auth (runs locally on machine, trusted context)
 
-**Browser Discovery:**
-- Endpoint: `http://127.0.0.1:[9000-9003]/json/list` 
-- Purpose: Discover available debuggable tabs and their CDP endpoints
-- Used by: `discoverCDP()` function in `server.js` (lines 119-143)
-- Targets: `antigravity.js` and `claude.js` define discovery logic per application
-
-**ngrok Tunneling (Optional):**
-- Service: ngrok (https://dashboard.ngrok.com)
-- Auth: `NGROK_AUTHTOKEN` environment variable
-- Purpose: Expose local server to internet for mobile access from outside home network
-- Not directly integrated - user manually configures ngrok separately
+**ngrok (Optional):**
+- Service: Public URL tunneling for remote mobile access
+  - SDK/Client: External command-line tool (referenced in `.env.example`)
+  - Auth: `NGROK_AUTHTOKEN` environment variable
+  - Purpose: Enables remote access without 1-hour session limit
 
 ## Data Storage
 
-**File System:**
-- Primary storage for Claude Code session history
-- Location: `~/.claude/projects/` (user home directory)
-- Format: JSONL files (one JSON object per line)
-- Read by: `/chat-history` endpoint (lines 2037-2093 in `server.js`)
-- Contains: Session metadata, user messages, timestamps
-
-**In-Memory State:**
-- Current target: `currentTarget` variable
-- CDP connections map: `cdpConnections` Map object
-- Last snapshot: `lastSnapshot` and `lastSnapshotHash`
-- No persistence between server restarts
-
 **Databases:**
-- None (stateless backend, state stored in client session or filesystem)
+- None - stateless application (snapshots exist only in memory)
 
 **File Storage:**
-- Local filesystem only (no cloud storage)
-- Static files served from `public/` directory
+- Local filesystem only
+  - Static assets: `public/` directory (HTML, CSS, JS, images)
+  - Certificates: `certs/` directory (auto-generated SSL certs)
+  - Snapshots: Not persisted (in-memory cache only)
 
 **Caching:**
-- Snapshot caching via hash comparison (line 1364-1369 in `server.js`)
-- Prevents redundant WebSocket broadcasts
+- In-memory snapshots: `lastSnapshot` and `lastSnapshotHash` globals in server.js
+- Hash-based deduplication to avoid redundant WebSocket broadcasts
 
 ## Authentication & Identity
 
 **Auth Provider:**
-- Custom implementation (not third-party)
-- Approach: 
-  - Password-based with hashed token
-  - Cookie-based sessions
-  - Local network auto-exemption
-  - Magic link via query parameter
+- Custom cookie-based authentication
+  - Implementation: Password hash stored in `AUTH_TOKEN` (app_password + salt hashed)
+  - Cookie name: `ag_auth_token`
+  - Signed via: `SESSION_SECRET` environment variable
 
-**Implementation Details:**
-- Token generation: `hashString()` function (lines 1266-1274)
-- Cookie name: `ag_auth_token`
-- Cookie attributes: httpOnly, signed, 30-day expiration
-- Session secret: `process.env.SESSION_SECRET` or default fallback
+**Auth Flow:**
+1. Client sends password via `/login` POST endpoint
+2. Server hashes `APP_PASSWORD + AUTH_SALT` and sets signed cookie
+3. Cookie verified on subsequent requests via `cookieParser.signedCookie()`
+4. Local Wi-Fi requests (127.0.0.1, internal IPs) exempt from auth
 
-**Environment Configuration:**
-- `APP_PASSWORD` - Master password for interface
-- `AUTH_SALT` - Unique salt for token hashing
-- `SESSION_SECRET` - Secure cookie signing key
+**Local Network Bypass:**
+- Function `isLocalRequest()` checks if request is from 127.0.0.1 or private IP ranges (192.168.x.x, 10.x.x.x)
+- Local requests skip authentication entirely
 
 ## Monitoring & Observability
 
 **Error Tracking:**
-- None (no third-party error reporting)
+- None detected
 
 **Logs:**
-- Console-based (stdout/stderr)
-- Color-coded output with emoji indicators
-- Key events logged:
-  - CDP discovery and connection (lines 1302-1328)
-  - Snapshot captures and updates (line 1381)
-  - Client connections (line 1904)
-  - Server startup (lines 2131-2136)
-
-**Debugging:**
-- `/debug-ui` endpoint (lines 2593-2602) - UI tree inspection
-- `/ui-inspect` endpoint (lines 2657-1850) - Button and element inventory
-- `/cdp-targets` endpoint (lines 2853-2864) - Available CDP targets
+- Console logging (`console.log`, `console.error`, `console.warn`)
+- Runtime errors logged to stdout
+- CDP connection failures logged with diagnostic information
+- No external logging service integration
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- Local development on Windows/macOS/Linux
-- Requires manually running application with debugging port
-- Optional public exposure via ngrok tunnel
+- Self-hosted (runs on developer machine or server)
+- Accessible via Wi-Fi to mobile devices on same network
+- Optional remote access via ngrok
 
 **CI Pipeline:**
-- None detected (no GitHub Actions, no automated tests)
-
-**Start Scripts:**
-- `npm start` or `npm run dev` - Start server
-- Bash scripts: `start_ag_phone_connect.sh`, `start_ag_phone_connect_web.sh`
-- Batch scripts: `start_ag_phone_connect.bat`, `start_ag_phone_connect_web.bat`
+- None detected
 
 ## Environment Configuration
 
-**Required env vars:**
-- `APP_PASSWORD` - Access password for mobile interface
-- `NGROK_AUTHTOKEN` - (Optional) For public tunneling
-
-**Optional env vars:**
+**Required env vars (app functionality):**
+- `APP_PASSWORD` - Mobile interface login password (default: 'antigravity')
 - `PORT` - Server port (default: 3000)
-- `SESSION_SECRET` - Secure session signing key (default: fallback value)
-- `AUTH_SALT` - Token hashing salt (default: fallback value)
-- `xxx_API_KEY` - Placeholder for AI provider keys (user-defined, not used by core app)
+- `NGROK_AUTHTOKEN` - Optional, for remote tunneling
+
+**Optional env vars (security):**
+- `SESSION_SECRET` - Signed cookie encryption key (default: 'antigravity_secret_key_1337')
+- `AUTH_SALT` - Password hashing salt (default: 'antigravity_default_salt_99')
 
 **Secrets location:**
-- `.env` file (git-ignored, contains local configuration)
-- `.env.example` file (template with placeholder values)
-- File location: `/c/Users/Ocean/.gemini/antigravity/scratch/Phone-Chat/`
-
-**Certificate Location:**
-- SSL certs: `certs/server.key` and `certs/server.cert`
-- Auto-generated by `generate_ssl.js` if missing
-- Optional - server falls back to HTTP if missing
+- `.env` file (gitignored, contains secrets)
+- Example template: `.env.example`
 
 ## Webhooks & Callbacks
 
 **Incoming:**
-- None (application does not accept webhooks)
+- None - application is pull-based (polling via HTTP GET)
 
 **Outgoing:**
-- WebSocket broadcasts to connected clients when snapshots update (lines 1372-1379)
-- Real-time UI synchronization via WebSocket messages: `type: 'snapshot_update'`
+- None detected
 
-## Multi-Target Architecture
+## Target-Specific Integrations
 
-**Supported Targets:**
-1. **Antigravity** (port 9000-9003)
-   - Discovery: `targets/antigravity.js` (lines 24-33)
-   - Identifies via: `workbench.html` or title containing "Antigravity" or "workbench"
-   - Root element: `#conversation`, `#chat`, or `#cascade`
+**Antigravity Target** (`targets/antigravity.js`):
+- CDP discovery: Looks for `workbench.html` in `/json/list`
+- UI interaction: Finds `#conversation`, `#chat`, or `#cascade` containers
+- Input injection: Targets `[contenteditable="true"]` elements
+- Messages: Sends to Antigravity input area and submits via Enter key or send button click
 
-2. **Claude Code** (port 9000-9003)
-   - Discovery: `targets/claude.js` (lines 15-29)
-   - Identifies via: `extensionId=Anthropic.claude-code` or title containing "Claude Code"
-   - Prioritizes: `purpose=webviewView` frame
-   - Root element: `document.body` inside `#active-frame` iframe
+**Claude Code Target** (`targets/claude.js`):
+- CDP discovery: Prioritizes `purpose=webviewView` iframe with `extensionId=Anthropic.claude-code`
+- UI interaction: Accesses content within `<iframe id="active-frame">` via `contentDocument`
+- Input injection: Targets `<div contenteditable="plaintext-only">` elements
+- Toolbar actions: Can toggle auto-edit mode and select Claude AI models
+- Special feature: `AskUserQuestion` detection and interaction via `/claude/question/*` endpoints
+- Navigation: Support for multi-question navigation (next/prev)
 
-**Target Registry:**
-- Defined in `server.js` (line 20): `const TARGETS = { antigravity, claude }`
-- Runtime switching: `/switch-target` endpoint (lines 1941-1958)
-- Current target: `currentTarget` variable (default: 'antigravity')
+## Real-time Communication
 
-## Integration Patterns
+**WebSocket Protocol:**
+- Endpoint: `ws://localhost:3000` (or `wss://` for HTTPS)
+- Authentication: Same signed cookie validation as HTTP
+- Message flow:
+  1. Client connects via `connectWebSocket()` in app.js
+  2. Server broadcasts snapshots to all connected clients on polling interval
+  3. Server polls CDP every 1 second (`POLL_INTERVAL = 1000`)
+  4. Snapshot hash-checked to avoid duplicate broadcasts
+- Auto-reconnect: Client reconnects every 2 seconds on disconnect
+- Snapshot format: `{ type: 'snapshot', snapshot: { html, css, scrollInfo, ... } }`
 
-**Remote Execution:**
-- CDP `Runtime.evaluate()` - Execute JavaScript in browser contexts
-- Timeout: 30 seconds per call (line 156)
-- Used for: DOM queries, event injection, screenshot capture, action triggering
+## HTTP API Endpoints
 
-**Message Injection:**
-- Text inserted into editor via: `document.execCommand()`, fallback to direct text assignment
-- Submit via: Button click or keyboard Enter event
-- Implementation: `injectMessage()` in each target module
+**Authentication:**
+- `POST /login` - Set authentication cookie
+- `POST /logout` - Clear authentication cookie
 
-**Snapshot Capture:**
-- DOM cloning and serialization to HTML
-- CSS rule extraction and filtering
-- Image conversion to base64 data URIs
-- Inline style normalization for mobile rendering
+**Core Operations:**
+- `GET /snapshot` - Get current cached snapshot
+- `GET /chat-status` - Check if chat is open
+- `POST /send` - Send message to current target
+- `POST /refresh` - Force immediate CDP capture (bypass cache)
+- `POST /stop` - Stop text generation
+
+**UI Control:**
+- `POST /set-mode` - Switch between Fast/Planning modes (Antigravity)
+- `POST /set-model` - Change AI model selection
+- `POST /remote-click` - Click elements via CSS selector
+- `POST /remote-scroll` - Sync phone scroll to desktop
+
+**Chat Management:**
+- `POST /new-chat` - Start new conversation
+- `GET /chat-history` - Get list of previous chats
+- `POST /select-chat` - Switch to specific chat
+- `POST /close-history` - Close history panel
+
+**Claude Code Specific:**
+- `POST /claude/action` - Execute toolbar action
+- `GET /claude/toolbar-state` - Get edit mode (auto/manual)
+- `GET /claude/question` - Detect `AskUserQuestion` overlay
+- `POST /claude/question/select` - Select question option by index
+- `POST /claude/question/submit` - Submit answer
+- `POST /claude/question/other-text` - Set custom text input
+- `POST /claude/question/cancel` - Dismiss question (Escape key)
+- `POST /claude/question/navigate` - Navigate between questions
+
+**Diagnostics:**
+- `GET /health` - Server health check
+- `GET /ssl-status` - HTTPS certificate status
+- `POST /generate-ssl` - Generate self-signed certificates
+- `GET /ui-inspect` - Debug mode: return all buttons as JSON
+- `GET /debug-ui` - Legacy debug endpoint
+- `GET /cdp-targets` - List discovered CDP endpoints
+- `GET /targets` - List available targets and connection status
+- `POST /switch-target` - Switch active target (antigravity or claude)
+- `GET /app-state` - Get current mode and model info
+- `GET /claude/question/debug` - Debug AskUserQuestion DOM structure
 
 ---
 
-*Integration audit: 2026-04-07*
+*Integration audit: 2026-04-08*

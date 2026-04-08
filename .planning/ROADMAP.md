@@ -14,6 +14,7 @@ PhoneCode is a mature, working tool. The roadmap focuses on hardening the existi
 - [ ] **Phase 1: Testing Foundation** - Establish test infrastructure and baseline coverage for critical paths
 - [ ] **Phase 2: Tech Debt Refactoring** - Modularize server.js and improve code structure
 - [ ] **Phase 3: Mobile UX Improvements** - Better scroll sync, gesture support, and UI polish
+- [ ] **Phase 4: Snapshot Diffing** - Incremental diff-based snapshot updates to cut bandwidth 80–95%
 
 ## Phase Details
 
@@ -54,7 +55,21 @@ Plans:
   4. Logging is structured and consistently formatted
 **Plans**: TBD
 
-### Phase 3: Mobile UX Improvements
+### Phase 4: Snapshot Diffing
+**Goal**: Replace full-HTML snapshot broadcasts (500KB–2MB each) with incremental diff-based updates so the mobile client only receives changed nodes, reducing bandwidth by 80–95% and improving responsiveness on slow connections.
+**Depends on**: Phase 2 (modular server makes diffing logic easier to isolate)
+**Requirements**: REQ-05
+**Success Criteria** (what must be TRUE):
+  1. Server computes a structural diff between consecutive snapshots and sends only changed nodes
+  2. Client applies patches to its local DOM copy instead of replacing the full iframe content
+  3. First-load still receives full snapshot; subsequent updates are diffs
+  4. Bandwidth per update drops to <20KB on typical sessions (vs. current 500KB–2MB)
+  5. Visual output on mobile is identical to current full-replace approach
+**Plans**: 2 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Server: install diff-dom+jsdom, `lib/snapshot-diff.js`, seq counter, broadcast patch or fallback
+- [ ] 04-02-PLAN.md — Client: load diff-dom, `applySnapshotDiff()`, seq tracking, reconnect/target-switch reset
 **Goal**: Improve the mobile interaction quality — faster scroll sync, better visual feedback for connection state, and smoother handling of long sessions.
 **Depends on**: Phase 2 (cleaner codebase makes frontend changes safer)
 **Requirements**: REQ-04
