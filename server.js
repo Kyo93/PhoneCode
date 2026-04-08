@@ -1405,11 +1405,13 @@ async function startPolling(wss) {
                     const prevHtml = lastSnapshot ? lastSnapshot.html : null;
                     const fullBytes = Buffer.byteLength(snapshot.html, 'utf8');
 
-                    // CSS null-guard (Plan 05-02): browser returns snapshot.css=null when CSS cache hits.
-                    // Hard contract: lastSnapshot.css must NEVER be null — GET /snapshot serves lastSnapshot
-                    // verbatim to reconnecting clients. A null CSS causes styleTag.textContent = '' → styles wiped.
+                    // CSS null/undefined-guard (Plan 05-02 + 05-04): browser returns snapshot.css=null when CSS
+                    // fingerprint cache hits (05-02). Plan 05-03's MutationObserver early-return omits the css
+                    // field entirely (snapshot.css === undefined). Loose != null catches both null and undefined.
+                    // Hard contract: lastSnapshot.css must NEVER be null or undefined — GET /snapshot serves
+                    // lastSnapshot verbatim to reconnecting clients. Missing CSS wipes all styles on new clients.
                     // Normalize to prior effective CSS before any processing.
-                    const effectiveCSS = snapshot.css !== null
+                    const effectiveCSS = snapshot.css != null
                         ? snapshot.css
                         : (lastSnapshot?.css ?? '');
 
