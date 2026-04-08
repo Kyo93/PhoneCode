@@ -77,6 +77,7 @@ export async function captureSnapshot(cdp) {
         const imgCache = window.__phoneCodeImgCache;
         const IMG_CACHE_MAX_BYTES = 50 * 1024 * 1024; // 50MB cap (base64 string bytes)
 
+        const t0 = performance.now();
         const images = clone.querySelectorAll('img');
         const promises = Array.from(images).map(async (img) => {
             const rawSrc = img.getAttribute('src');
@@ -123,6 +124,7 @@ export async function captureSnapshot(cdp) {
             }
         });
         await Promise.all(promises);
+        const imgMs = Math.round(performance.now() - t0);
 
         const html = clone.outerHTML;
 
@@ -154,7 +156,10 @@ export async function captureSnapshot(cdp) {
             stats: {
                 nodes: clone.getElementsByTagName('*').length,
                 htmlSize: html.length,
-                cssSize: allCSS.length
+                cssSize: allCSS.length,
+                imgMs,
+                imgCached: Array.from(images).filter(i => imgCache.has(i.getAttribute('src'))).length,
+                imgTotal: images.length
             }
         };
     })()`;
