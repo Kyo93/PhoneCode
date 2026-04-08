@@ -38,6 +38,11 @@ let autoResumeAttempted = false; // Prevent auto-resume loop (selectChat trigger
 let lastDynamicCssHash = ''; // Track last injected dynamic CSS to skip unchanged updates
 let questionOverlayVisible = false; // AskUserQuestion overlay state
 
+// --- Snapshot Diffing ---
+const dd = new window.DiffDOM({ maxChildCount: false });
+let snapshotSeq = 0;           // Last successfully applied seq number
+let snapshotSeqInit = false;   // True only after first full /snapshot load completes
+
 // --- Static Dark Mode Overrides (injected once, never rebuilt) ---
 const STATIC_DARK_CSS = `
 /* --- FORCE DARK MODE OVERRIDES --- */
@@ -319,6 +324,8 @@ async function switchTarget(id) {
             console.log('[TARGET] Switched to', id);
             fetchTargets();
             chatContent.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div></div>';
+            snapshotSeq = 0;
+            snapshotSeqInit = false;
             setTimeout(loadSnapshot, 300);
         }
     } catch (e) { console.error('[TARGET] Switch failed', e); }
@@ -390,6 +397,8 @@ const MODELS = [
 // --- WebSocket ---
 function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    snapshotSeq = 0;
+    snapshotSeqInit = false;
     ws = new WebSocket(`${protocol}//${window.location.host}`);
 
     ws.onopen = () => {
@@ -399,13 +408,25 @@ function connectWebSocket() {
     };
 
     ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'error' && data.message === 'Unauthorized') {
-            window.location.href = '/login.html';
-            return;
-        }
-        if (data.type === 'snapshot_update' && autoRefreshEnabled && !userIsScrolling) {
-            loadSnapshot();
+        try {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'error' && data.message === 'Unauthorized') {
+                window.location.href = '/login.html';
+                return;
+            }
+
+            if (data.type === 'snapshot_diff' && autoRefreshEnabled) {
+                applySnapshotDiff(data);
+                return;
+            }
+
+            if (data.type === 'snapshot_update' && autoRefreshEnabled && !userIsScrolling) {
+                snapshotSeq = data.seq || snapshotSeq;
+                loadSnapshot();
+            }
+        } catch (e) {
+            console.error('[WS] Failed to handle message:', e);
         }
     };
 
@@ -453,6 +474,11 @@ async function loadSnapshot() {
 
         const data = await response.json();
 
+        if (data.seq !== undefined) {
+            snapshotSeq = data.seq;
+            snapshotSeqInit = true;
+        }
+
         // Capture scroll state BEFORE updating content
         const scrollPos = chatContainer.scrollTop;
         const scrollHeight = chatContainer.scrollHeight;
@@ -481,7 +507,7 @@ async function loadSnapshot() {
             styleTag.textContent = data.css || '';
             lastDynamicCssHash = newCssHash;
         }
-        chatContent.innerHTML = data.html;
+        document.getElementById('chatContent').innerHTML = data.html;
 
         // Add mobile copy buttons to all code blocks
         addMobileCopyButtons();
@@ -516,10 +542,99 @@ async function loadSnapshot() {
     }
 }
 
+/**
+ * Apply a server-sent diff patch to chatContent.
+ * Clones the DOM before applying so a failed patch can be rolled back cleanly.
+ * Falls back to full loadSnapshot() on seq gap, apply error, or before init.
+ */
+function applySnapshotDiff(data) {
+    // Guard: discard diffs until first full snapshot establishes baseline
+    if (!snapshotSeqInit) {
+        console.log('[DIFF] Not initialised yet, discarding diff seq=' + data.seq);
+        return;
+    }
+
+    // Seq gap: missed one or more packets — request full resync
+    if (data.seq !== snapshotSeq + 1) {
+        console.warn(`[DIFF] Seq gap: expected ${snapshotSeq + 1}, got ${data.seq}. Resyncing.`);
+        snapshotSeq = data.seq;
+        loadSnapshot();
+        return;
+    }
+
+    // Capture scroll state BEFORE patching
+    const scrollPos = chatContainer.scrollTop;
+    const scrollHeight = chatContainer.scrollHeight;
+    const clientHeight = chatContainer.clientHeight;
+    const isNearBottom = scrollHeight - scrollPos - clientHeight < 120;
+    const isUserScrollLocked = Date.now() < userScrollLockUntil;
+
+    // Clone current DOM for rollback in case dd.apply() partially mutates before throwing
+    const rollbackSnapshot = chatContent.cloneNode(true);
+
+    try {
+        // Apply CSS only if server included it (undefined = unchanged)
+        if (data.css !== undefined) {
+            const newCssHash = data.css ? data.css.length + ':' + data.css.slice(0, 64) : '';
+            if (newCssHash !== lastDynamicCssHash) {
+                let styleTag = document.getElementById('cdp-dynamic-styles');
+                if (!styleTag) {
+                    styleTag = document.createElement('style');
+                    styleTag.id = 'cdp-dynamic-styles';
+                    document.head.appendChild(styleTag);
+                }
+                styleTag.textContent = data.css || '';
+                lastDynamicCssHash = newCssHash;
+            }
+        }
+
+        // Apply DOM diff patch
+        dd.apply(chatContent, data.diff);
+
+        // Success — update seq tracker
+        snapshotSeq = data.seq;
+
+        // Re-attach mobile copy buttons (new code blocks may have appeared)
+        addMobileCopyButtons();
+
+        // Restore scroll position (same logic as loadSnapshot)
+        if (forceScrollBottomOnLoad) {
+            forceScrollBottomOnLoad = false;
+            scrollToBottom();
+        } else if (isUserScrollLocked) {
+            const scrollPercent = scrollHeight > 0 ? scrollPos / scrollHeight : 0;
+            chatContainer.scrollTop = chatContainer.scrollHeight * scrollPercent;
+        } else if (isNearBottom || scrollPos === 0) {
+            scrollToBottom();
+        } else {
+            chatContainer.scrollTop = scrollPos;
+        }
+
+        // Check for AskUserQuestion overlay
+        if (window.lastTarget === 'claude') {
+            checkForQuestion();
+        }
+
+        console.log(`[DIFF] Applied seq=${data.seq}`);
+
+    } catch (e) {
+        // Partial apply may have corrupted the DOM — restore clone before resyncing.
+        // chatContent is declared `const` at app.js:3, so we cannot reassign it.
+        // Instead, restore the clone in-place and use getElementById in loadSnapshot().
+        console.error('[DIFF] Apply failed (seq=' + data.seq + '):', e.message, '— rolling back and resyncing');
+        // Guard: dd.apply() may detach chatContent before throwing — check parent before replacing
+        if (chatContent.parentNode) {
+            chatContent.parentNode.replaceChild(rollbackSnapshot, chatContent);
+        }
+        snapshotSeq = data.seq;
+        loadSnapshot();
+    }
+}
+
 // --- Mobile Code Block Copy Functionality ---
 function addMobileCopyButtons() {
     // Find all pre elements (code blocks) in the chat
-    const codeBlocks = chatContent.querySelectorAll('pre');
+    const codeBlocks = document.getElementById('chatContent').querySelectorAll('pre');
 
     codeBlocks.forEach((pre, index) => {
         // Skip if already has our button
