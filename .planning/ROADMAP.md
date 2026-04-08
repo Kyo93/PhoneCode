@@ -15,6 +15,7 @@ PhoneCode is a mature, working tool. The roadmap focuses on hardening the existi
 - [ ] **Phase 2: Tech Debt Refactoring** - Modularize server.js and improve code structure
 - [ ] **Phase 3: Mobile UX Improvements** - Better scroll sync, gesture support, and UI polish
 - [ ] **Phase 4: Snapshot Diffing** - Incremental diff-based snapshot updates to cut bandwidth 80–95%
+- [ ] **Phase 5: Capture Pipeline Optimization** - Cache images and CSS inside browser context to cut snapshot capture time 60–90%
 
 ## Phase Details
 
@@ -70,6 +71,24 @@ Plans:
 Plans:
 - [ ] 04-01-PLAN.md — Server: install diff-dom+jsdom, `lib/snapshot-diff.js`, seq counter, broadcast patch or fallback
 - [ ] 04-02-PLAN.md — Client: load diff-dom, `applySnapshotDiff()`, seq tracking, reconnect/target-switch reset
+
+### Phase 5: Capture Pipeline Optimization
+**Goal**: Eliminate redundant work inside `captureSnapshot()` — images are re-fetched and CSS re-collected on every poll even when unchanged. Persistent browser-side caches skip already-processed data on repeat polls.
+**Depends on**: Nothing (targets files only, standalone)
+**Requirements**: REQ-06
+**Success Criteria** (what must be TRUE):
+  1. Images already converted in a prior poll are not re-fetched or re-converted
+  2. CSS re-collected only when stylesheets actually change (fingerprint check)
+  3. Snapshot capture time <200ms on polls where content is stable (vs. current 1–5s)
+  4. No visual regression — snapshots still contain all images and correct CSS
+  5. Cache cleared when CDP context resets or page navigates
+**Plans**: 3 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — Image cache: `window.__phoneCodeImgCache`, skip >500KB, `invalidateSnapshotCache()` export
+- [ ] 05-02-PLAN.md — CSS cache: strengthened fingerprint, null CSS server contract fix, `window.__phoneCodeCSSFingerprint`
+- [ ] 05-03-PLAN.md — MutationObserver cache: skip clone when DOM unchanged, `stats_update` WS, `⚡` indicator
+
 **Goal**: Improve the mobile interaction quality — faster scroll sync, better visual feedback for connection state, and smoother handling of long sessions.
 **Depends on**: Phase 2 (cleaner codebase makes frontend changes safer)
 **Requirements**: REQ-04
