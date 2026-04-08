@@ -3,11 +3,11 @@
 ## Current Status
 
 **Last session:** 2026-04-08
-**Stopped at:** Phase 5 Plan 03 complete — MutationObserver HTML cache deployed
+**Stopped at:** Phase 5 Plan 04 complete — effectiveCSS undefined guard + CDP reconnect cache invalidation deployed
 
 ## Active Phase
 
-Phase 5 complete. All 3 plans done (05-01 image cache, 05-02 CSS cache, 05-03 MutationObserver HTML cache). Next: Phase 1 (Testing Foundation) or Phase 2 (Tech Debt Refactoring).
+Phase 5 complete. All 4 plans done (05-01 image cache, 05-02 CSS cache, 05-03 MutationObserver HTML cache, 05-04 gap closure). Next: Phase 1 (Testing Foundation) or Phase 2 (Tech Debt Refactoring).
 
 ## Next Action
 
@@ -21,6 +21,7 @@ Phase 1: Testing Foundation — establish test infrastructure and baseline cover
 
 | Date | Activity |
 |---|---|
+| 2026-04-08 | Phase 5 plan 05-04 (gap closure) executed — effectiveCSS loose guard + invalidateSnapshotCache in initCDP, server-restart regression closed |
 | 2026-04-08 | Phase 5 plan 05-03 (MutationObserver HTML cache) executed — observer dirty flag, stats_update WS, ⚡ indicator PASS |
 | 2026-04-08 | Phase 5 plan 05-02 (CSS fingerprint cache) executed — CSS fingerprint, null-CSS server contract PASS |
 | 2026-04-08 | Phase 5 plan 05-01 (image cache) executed — LRU cache, invalidateSnapshotCache, imgMs stats PASS |
@@ -42,4 +43,6 @@ Phase 1: Testing Foundation — establish test infrastructure and baseline cover
 - Cache hit: css field absent entirely (not null) — null means CSS-unchanged; absent means full HTML cache hit (05-03)
 - stats_update omits seq intentionally — not a snapshot sequence event; prevents snapshotSeq advancement on mobile client (05-03)
 - Antigravity needs isConnected reconnect guard; claude.js does not — document.body never replaced in VS Code webview (05-03)
+- Loose != null replaces strict !== null for effectiveCSS guard — defense-in-depth catches undefined (MutationObserver early-return) as well as null (CSS fingerprint cache hit) (05-04)
+- invalidateSnapshotCache called after BOTH antigravity and claude cdpConnections.set() in initCDP — not only /switch-target (05-04)
 - Scroll staleness tradeoff accepted: MutationObserver does not fire on scroll; acceptable because scroll changes always coupled with DOM mutations during AI responses (05-03)

@@ -82,12 +82,13 @@ Plans:
   3. Snapshot capture time <200ms on polls where content is stable (vs. current 1–5s)
   4. No visual regression — snapshots still contain all images and correct CSS
   5. Cache cleared when CDP context resets or page navigates
-**Plans**: 3 plans
+**Plans**: 4 plans
 
 Plans:
 - [x] 05-01-PLAN.md — Image cache: `window.__phoneCodeImgCache`, skip >500KB, `invalidateSnapshotCache()` export
 - [x] 05-02-PLAN.md — CSS cache: strengthened fingerprint, null CSS server contract fix, `window.__phoneCodeCSSFingerprint`
 - [x] 05-03-PLAN.md — MutationObserver cache: skip clone when DOM unchanged, `stats_update` WS, `⚡` indicator
+- [x] 05-04-PLAN.md — Gap closure: effectiveCSS loose `!= null` guard + `invalidateSnapshotCache` in `initCDP()` for server-restart regression
 
 **Goal**: Improve the mobile interaction quality — faster scroll sync, better visual feedback for connection state, and smoother handling of long sessions.
 **Depends on**: Phase 2 (cleaner codebase makes frontend changes safer)

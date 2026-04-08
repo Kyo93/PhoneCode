@@ -79,7 +79,22 @@ Snapshot broadcasts must switch from full-HTML replacement to incremental diff p
 
 ---
 
+## REQ-06: Capture Pipeline Optimization
 
+**Priority**: High
+**Phase**: 5 (Capture Pipeline Optimization)
+
+`captureSnapshot()` must not re-process data that hasn't changed between polls.
+
+### Acceptance Criteria
+- Browser-side image cache (`window.__phoneCodeImgCache`) stores `url → base64` across polls; already-cached images are not re-fetched
+- Images larger than 500KB are skipped (src left as-is, not converted)
+- CSS fingerprint (`window.__phoneCodeCSSFingerprint`) checked before re-collecting rules; unchanged CSS returns `null` (server uses last cached value)
+- Snapshot capture latency <200ms on polls where no new images and CSS is stable
+- Cache invalidated on CDP context reset (server calls `invalidateSnapshotCache()` on reconnect)
+- Both `targets/claude.js` and `targets/antigravity.js` apply identical caching strategy
+
+---
 
 ### Performance
 - Snapshot polling: 1s interval (hardcoded, acceptable for single-user tool)
