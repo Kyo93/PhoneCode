@@ -86,7 +86,7 @@ Plans:
 
 Plans:
 - [x] 05-01-PLAN.md — Image cache: `window.__phoneCodeImgCache`, skip >500KB, `invalidateSnapshotCache()` export
-- [ ] 05-02-PLAN.md — CSS cache: strengthened fingerprint, null CSS server contract fix, `window.__phoneCodeCSSFingerprint`
+- [x] 05-02-PLAN.md — CSS cache: strengthened fingerprint, null CSS server contract fix, `window.__phoneCodeCSSFingerprint`
 - [ ] 05-03-PLAN.md — MutationObserver cache: skip clone when DOM unchanged, `stats_update` WS, `⚡` indicator
 
 **Goal**: Improve the mobile interaction quality — faster scroll sync, better visual feedback for connection state, and smoother handling of long sessions.
