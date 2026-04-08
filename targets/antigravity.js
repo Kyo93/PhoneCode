@@ -43,6 +43,41 @@ export async function captureSnapshot(cdp) {
             return { error: 'chat container not found', debug: { hasBody: !!body, availableIds: childIds } };
         }
 
+        // Observer setup — with reconnect guard for Antigravity SPA container replacement.
+        // If cascade element is replaced (React remount), the old observer watches a detached node.
+        // Guard: reset observer if element changed or disconnected.
+        // CONFIG: same as claude.js — subtree+childList+characterData+attributes covers all mutation types.
+        // FIRST-POLL BEHAVIOR: __phoneCodeLastHTML null on init → early return always false → full capture.
+        if (!window.__phoneCodeObserver
+                || !window.__phoneCodeObservedEl?.isConnected
+                || window.__phoneCodeObservedEl !== cascade) {
+            if (window.__phoneCodeObserver) window.__phoneCodeObserver.disconnect();
+            window.__phoneCodeMutDirty = true;
+            window.__phoneCodeLastHTML = null;
+            window.__phoneCodeLastMeta = null;
+            window.__phoneCodeObserver = new MutationObserver(() => {
+                window.__phoneCodeMutDirty = true;
+            });
+            window.__phoneCodeObserver.observe(cascade, {
+                subtree: true,
+                childList: true,
+                characterData: true,
+                attributes: true
+            });
+            window.__phoneCodeObservedEl = cascade; // track which element is being observed
+        }
+
+        // Early return on cache hit (same condition as claude.js).
+        // __phoneCodeLastHTML null on first poll ensures this is always false initially.
+        if (!window.__phoneCodeMutDirty && window.__phoneCodeLastHTML && window.__phoneCodeLastMeta) {
+            return {
+                html: window.__phoneCodeLastHTML,
+                ...window.__phoneCodeLastMeta,
+                stats: { ...window.__phoneCodeLastMeta.stats, cached: true }
+            };
+        }
+        window.__phoneCodeMutDirty = false;
+
         const cascadeStyles = window.getComputedStyle(cascade);
 
         const scrollContainer = cascade.querySelector('.overflow-y-auto, [data-scroll-area]') || cascade;
@@ -225,9 +260,8 @@ export async function captureSnapshot(cdp) {
         }
         const cssMs = Math.round(performance.now() - tCss0);
 
-        return {
-            html,
-            css: allCSS,
+        window.__phoneCodeLastHTML = html;
+        window.__phoneCodeLastMeta = {
             backgroundColor: cascadeStyles.backgroundColor,
             color: cascadeStyles.color,
             fontFamily: cascadeStyles.fontFamily,
@@ -235,13 +269,24 @@ export async function captureSnapshot(cdp) {
             stats: {
                 nodes: clone.getElementsByTagName('*').length,
                 htmlSize: html.length,
-                cssSize: allCSS ? allCSS.length : 0,  // null-guard: allCSS is null on cache hit
+                cssSize: allCSS ? allCSS.length : 0,
                 imgMs,
                 imgCached: Array.from(images).filter(i => imgCache.has(i.getAttribute('src'))).length,
                 imgTotal: images.length,
                 cssMs,
-                cssCached: allCSS === null   // true = cache hit, false = re-collected
+                cssCached: allCSS === null,
+                cached: false
             }
+        };
+
+        return {
+            html,
+            css: allCSS,
+            backgroundColor: cascadeStyles.backgroundColor,
+            color: cascadeStyles.color,
+            fontFamily: cascadeStyles.fontFamily,
+            scrollInfo,
+            stats: window.__phoneCodeLastMeta.stats
         };
     })()`;
 
