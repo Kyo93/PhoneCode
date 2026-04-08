@@ -416,6 +416,11 @@ function connectWebSocket() {
                 return;
             }
 
+            if (data.type === 'stats_update') {
+                updateStatsBar(data.stats);
+                return;
+            }
+
             if (data.type === 'snapshot_diff' && autoRefreshEnabled) {
                 applySnapshotDiff(data);
                 return;
@@ -435,6 +440,15 @@ function connectWebSocket() {
         updateStatus(false);
         setTimeout(connectWebSocket, 2000);
     };
+}
+
+function updateStatsBar(stats) {
+    const statsText = document.getElementById('statsText');
+    if (!statsText) return;
+    const kbs = Math.round(((stats.htmlSize || 0) + (stats.cssSize || 0)) / 1024);
+    const nodes = stats.nodes || 0;
+    const cacheIndicator = stats.cached ? ' · ⚡' : '';
+    statsText.textContent = `${nodes} Nodes · ${kbs}KB${cacheIndicator}`;
 }
 
 function updateStatus(connected) {
@@ -487,12 +501,7 @@ async function loadSnapshot() {
         const isUserScrollLocked = Date.now() < userScrollLockUntil;
 
         // --- UPDATE STATS ---
-        if (data.stats) {
-            const kbs = Math.round((data.stats.htmlSize + data.stats.cssSize) / 1024);
-            const nodes = data.stats.nodes;
-            const statsText = document.getElementById('statsText');
-            if (statsText) statsText.textContent = `${nodes} Nodes · ${kbs}KB`;
-        }
+        if (data.stats) updateStatsBar(data.stats);
 
         // --- CSS INJECTION (Dynamic only — static overrides are in cdp-static-styles) ---
         // Only update if the snapshot CSS actually changed (avoids layout recalc on 120Hz)
